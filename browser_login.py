@@ -1,6 +1,7 @@
-"""Visible, isolated Edge login; credentials remain in memory only."""
+"""Isolated Edge or remote Chromium login; credentials remain in memory only."""
 import re
-import os
+import math
+import queue
 import threading
 import time
 from core import ORIGIN, CAS, browser_allowed, verify_session
@@ -12,13 +13,18 @@ ENTRY_URL = ORIGIN + '/daily-checkin/checkLogin?appId=294'
 
 
 class BrowserLogin:
-    def __init__(self, store):
+    def __init__(self, store, *, remote=False, slots=None):
         self.store = store
         self.lock = threading.Lock()
         self.cancelled = threading.Event()
         self.state = {'state': 'idle', 'message': '尚未开始登录'}
         self.thread = None
         self.started_at = None
+        self.remote = remote
+        self.slots = slots
+        self.owns_slot = False
+        self.commands = queue.Queue(maxsize=16)
+        self.frame = None
 
     def status(self):
         with self.lock:
@@ -37,30 +43,99 @@ class BrowserLogin:
         with self.lock:
             if self.thread and self.thread.is_alive():
                 raise ValueError('登录窗口已打开，请先完成或取消当前登录。')
+            if self.slots and not self.slots.acquire(blocking=False):
+                raise RuntimeError('登录服务繁忙，请稍后重试。')
+            self.owns_slot = self.slots is not None
             self.cancelled.clear()
+            self.frame = None
             self.started_at = time.monotonic()
-            self.state = {'state': 'opening', 'message': '正在打开独立 Edge 登录窗口…'}
+            self.state = {'state': 'opening', 'message': '正在打开独立学校登录页面…'}
             self.thread = threading.Thread(target=self.run, args=(student, password), daemon=True)
-            self.thread.start()
+            try:
+                self.thread.start()
+            except Exception:
+                if self.owns_slot:
+                    self.slots.release()
+                    self.owns_slot = False
+                raise
 
     def cancel(self):
         self.cancelled.set()
+        with self.lock:
+            self.frame = None
+
+    def screenshot(self):
+        with self.lock:
+            return self.frame
+
+    def command(self, value):
+        """Only bounded user input; never accept a URL, selector, or JavaScript."""
+        if not self.remote or not self.thread or not self.thread.is_alive() or self.cancelled.is_set():
+            raise ValueError('登录页面尚未就绪或已经关闭。')
+        if not isinstance(value, dict):
+            raise ValueError('无效的登录操作。')
+        kind = value.get('kind')
+        if kind in ('click', 'drag'):
+            keys = ('x', 'y', 'to_x', 'to_y') if kind == 'drag' else ('x', 'y')
+            for key in keys:
+                v = value.get(key)
+                limit = 1000 if key.endswith('x') else 760
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v < limit:
+                    raise ValueError('点击位置无效。')
+            action = {key: value[key] for key in keys}
+        elif kind == 'text' and isinstance(value.get('text'), str) and 1 <= len(value['text']) <= 256:
+            action = {'text': value['text']}
+        elif kind == 'key' and value.get('key') in ('Tab', 'Enter', 'Backspace', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Control+A'):
+            action = {'key': value['key']}
+        elif kind == 'scroll' and value.get('delta') in (-500, 500):
+            action = {'delta': value['delta']}
+        else:
+            raise ValueError('不支持的登录操作。')
+        try:
+            self.commands.put_nowait((time.monotonic(), kind, action))
+        except queue.Full:
+            raise ValueError('操作过快，请稍后重试。') from None
+
+    def interact(self, page):
+        while not self.commands.empty():
+            created, kind, action = self.commands.get_nowait()
+            if self.cancelled.is_set() or time.monotonic() - created > 5:
+                continue
+            if kind == 'click':
+                page.mouse.click(action['x'], action['y'])
+            elif kind == 'drag':
+                page.mouse.move(action['x'], action['y'])
+                page.mouse.down()
+                page.mouse.move(action['to_x'], action['to_y'], steps=15)
+                page.mouse.up()
+            elif kind == 'text':
+                page.keyboard.insert_text(action['text'])
+            elif kind == 'key':
+                page.keyboard.press(action['key'])
+            elif kind == 'scroll':
+                page.mouse.wheel(0, action['delta'])
+        frame = page.screenshot(type='jpeg', quality=65, timeout=3000, animations='disabled')
+        with self.lock:
+            if not self.cancelled.is_set():
+                self.frame = frame
 
     def run(self, student, password):
         from playwright.sync_api import sync_playwright
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(channel='msedge', headless=False, timeout=15000,
+                browser = p.chromium.launch(**({} if self.remote else {'channel': 'msedge'}),
+                                            headless=self.remote, timeout=15000,
                                             **NETWORK.browser_options('idas.uestc.edu.cn'))
-                context = browser.new_context(service_workers='block')
-                previous = self.store.session()
-                if previous and previous['student_id'] == student:
-                    context.add_cookies(previous['cookies'])
-                # Protect even a manually navigated business page from attendance writes.
-                context.route('**/*', lambda route: route.continue_() if browser_allowed(
-                    route.request.method, route.request.url) else route.abort('blockedbyclient'))
-                context.route_web_socket('**/*', lambda socket: socket.close())
                 try:
+                    context = browser.new_context(service_workers='block', viewport={'width': 1000, 'height': 760},
+                                                  accept_downloads=False)
+                    previous = self.store.session()
+                    if previous and previous['student_id'] == student:
+                        context.add_cookies(previous['cookies'])
+                    # Protect even a manually navigated business page from attendance writes.
+                    context.route('**/*', lambda route: route.continue_() if browser_allowed(
+                        route.request.method, route.request.url) else route.abort('blockedbyclient'))
+                    context.route_web_socket('**/*', lambda socket: socket.close())
                     page = context.new_page()
                     user_agent = page.evaluate('navigator.userAgent')
                     page.goto(LOGIN_URL, wait_until='commit', timeout=20000)
@@ -82,7 +157,8 @@ class BrowserLogin:
                     except Exception:
                         # Changed selectors or manual authentication: leave the visible UI available.
                         password = ''
-                    self.update('waiting', '请在 Edge 中完成登录、验证码或二次验证；完成后会自动获取会话。')
+                    self.update('waiting', '请在下方学校页面完成验证码或二次验证。' if self.remote else
+                                '请在 Edge 中完成登录、验证码或二次验证；完成后会自动获取会话。')
                     deadline = time.monotonic() + 600
                     entered = False
                     last_probe = 0
@@ -90,6 +166,8 @@ class BrowserLogin:
                         if page.is_closed():
                             self.update('cancelled', '登录窗口已关闭，可重新开始。')
                             return
+                        if self.remote:
+                            self.interact(page)
                         cookies = context.cookies([ORIGIN, CAS])
                         if (urlsplit(page.url).hostname == 'jzsz.uestc.edu.cn'
                                 and any(c['name'] == 'SESSION' and c['domain'].lstrip('.') == 'jzsz.uestc.edu.cn' for c in cookies)):
@@ -108,17 +186,27 @@ class BrowserLogin:
                                     self.update('verifying', '正在验证学校会话并保存 Cookie…')
                                     verify_session(snapshot)
                                 except Exception:
-                                    self.update('waiting', '已获取登录 Cookie，等待智慧学工授权完成；请按 Edge 页面提示操作。')
+                                    self.update('waiting', '已获取登录 Cookie，等待智慧学工授权完成；请按学校页面提示操作。')
                                 else:
                                     if self.cancelled.is_set():
                                         self.update('cancelled', '已取消登录，会话未保存。')
                                         return
                                     self.store.save_session(snapshot)
-                                    self.update('success', '登录成功，Cookie 已自动加密保存；未提交打卡记录。')
+                                    self.update('success', '登录成功，可按页面设置将加密会话保存到此浏览器。' if self.remote else
+                                                '登录成功，Cookie 已自动加密保存；未提交打卡记录。')
                                     return
                         page.wait_for_timeout(1000)
                     self.update('cancelled', '已取消登录。' if self.cancelled.is_set() else '登录已超时，请重试。')
                 finally:
                     browser.close()
         except Exception:
-            self.update('error', '登录窗口未能完成。请确认 Edge 已安装、学校网络可访问，再重新打开。')
+            self.update('error', '登录未能完成，请检查浏览器运行环境和学校网络后重试。')
+        finally:
+            password = ''
+            with self.lock:
+                self.frame = None
+                while not self.commands.empty():
+                    self.commands.get_nowait()
+                if self.owns_slot:
+                    self.slots.release()
+                    self.owns_slot = False

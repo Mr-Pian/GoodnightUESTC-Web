@@ -15,3 +15,8 @@ android/.kotlin/
 android/local.properties
 *.jks
 *.keystore
+.env
+.env.*
+!.env.example
+deploy/team-users.caddy
+.directory

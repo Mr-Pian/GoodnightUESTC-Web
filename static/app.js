@@ -1,13 +1,14 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let csrf = '', map, marker, savedLocation = null, loginBusy = false, confirmation = '', submitting = false;
+let csrf = '', map, marker, savedLocation = null, loginBusy = false, confirmation = '', submitting = false, testing = false, operationBusy = false;
 let refreshInFlight = false;
+let hostedMode = false;
 const liveProgress=document.createElement('p');liveProgress.id='checkin-progress';liveProgress.className='live-progress';liveProgress.hidden=true;liveProgress.setAttribute('role','status');$('checkin-error').before(liveProgress);
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toast.timer); toast.timer=setTimeout(()=>$('toast').hidden=true,5000); }
 async function api(path, data) {
-  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path==='/api/checkin'?120000:path.includes('/test/online')||path.includes('/checkin/prepare')?60000:8000);
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path==='/api/session/restore'?15000:path==='/api/checkin'?120000:path.includes('/test/online')||path.includes('/checkin/prepare')?60000:8000);
   try{const response=await fetch(path,{signal:controller.signal,method:data===undefined?'GET':'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},...(data===undefined?{}:{body:JSON.stringify(data)})});
-    const result=await response.json(); if(!response.ok)throw new Error(result.error||'操作失败');return result;
+    const result=await response.json(); if(!response.ok){const error=new Error(result.error||'操作失败');error.reason=result.reason;error.status=response.status;if(['session_rejected','portal_session_rejected','micro_app_unauthorized'].includes(error.reason))document.dispatchEvent(new CustomEvent('school-session-invalid'));throw error;}return result;
   }catch(e){if(e.name==='AbortError')throw new Error(path==='/api/checkin'?'响应超时，签到结果尚不明确，请先核对学校记录，勿重复提交。':'连接等待超时，请检查网络后重试。');throw e;}finally{clearTimeout(timeout);}
 }
 function inverse(lat,lng){ // Invert the forward GCJ transform for map display only.
@@ -32,10 +33,12 @@ function currentLocation(){return {name:$('place-name').value.trim()||'手动选
 function dirtyLocation(){if(!$('latitude').value||!$('longitude').value)return true;const loc=currentLocation();return !savedLocation||['name','latitude','longitude','coordinate_system'].some(k=>loc[k]!==savedLocation[k]);}
 async function refresh(){
   if(refreshInFlight)return;refreshInFlight=true;try{
-  const r=await api('/api/status');csrf=r.csrf;
+  const r=await api('/api/status');
+  if(csrf&&csrf!==r.csrf){confirmation='';savedLocation=null;refresh.initialized=false;for(const id of ['latitude','longitude','place-name'])$(id).value='';if(marker){marker.remove();marker=null;}if(!submitting)$('checkin-dialog').close();toast('工作台已更新，请确认学校登录并重新选择实际位置。');}
+  csrf=r.csrf;hostedMode=Boolean(r.hosted);
   const active=['opening','waiting','verifying'].includes(r.login.state);loginBusy=active;
   $('login-button').disabled=active;$('cancel-login').hidden=!active;
-  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):'用 Edge 登录并导入 ↗';
+  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):hostedMode?'打开学校登录页面 ↗':'用 Edge 登录并导入 ↗';
   $('session-badge').textContent=r.account?'已保存':active?'登录中':'未登录';$('session-badge').className='badge'+(r.account?' green':'');
   $('account-dot').classList.toggle('active',Boolean(r.account));
   $('account-label').textContent=r.account?`${r.account.student_id} · ${r.account.cookie_count} 个会话 Cookie`:'等待导入学校账号';
@@ -43,7 +46,7 @@ async function refresh(){
   if(r.login.state==='success'&&refresh.previous!=='success')toast('Cookie 已自动导入，可进行在线只读检查。');refresh.previous=r.login.state;
   if(!refresh.initialized){fillLocation(r.location,false);refresh.initialized=true;}
   $('prepare-checkin').disabled=!r.account||!savedLocation||active||submitting;
-  const op=r.operation;const working=op&&op.active;
+  const op=r.operation;const working=op&&op.active;operationBusy=Boolean(working);
   $('prepare-checkin').textContent=working&&op.kind==='prepare'?`正在预检查… ${Math.floor(op.elapsed)} 秒`:'预检查并确认签到 →';
   if(working){const message=op.message+`（已用 ${Math.floor(op.elapsed)} 秒）`;
     if(op.kind==='prepare'||op.kind==='checkin')$('checkin-message').textContent=message;
@@ -51,7 +54,8 @@ async function refresh(){
     liveProgress.hidden=op.kind!=='checkin';liveProgress.textContent=message;
     if(op.kind==='checkin')$('submit-checkin').textContent='正在提交并核对…';
   }else{liveProgress.hidden=true;$('submit-checkin').textContent='确认并提交签到';}
-  }finally{refreshInFlight=false;}
+  document.dispatchEvent(new CustomEvent('workspace-status',{detail:r}));
+  }finally{refreshInFlight=false;scheduleRefresh();}
 }
 function renderResult(result){
   $('result').hidden=false;$('result').classList.remove('error');$('result-title').textContent=result.mode==='offline'?'离线自检通过':'在线只读检查完成';$('result-time').textContent=new Date().toLocaleTimeString('zh-CN');
@@ -60,17 +64,17 @@ function renderResult(result){
   const values=result.mode==='offline'?[['访问学校','0 次'],['提交记录','0 次'],['写入保护',`${result.blockedRequests.length} 项已拦截`]]:[['当天记录',statuses[result.recordStatus]||result.recordStatus],['学校时段',`${result.window.start}–${result.window.end}`],['当前时段',result.window.open?'开放':'未开放'],['所选位置',result.insideFence===null?'尚未配置':result.insideFence?'在允许范围内':'不在允许范围内'],['位置范围',`${result.fenceCount} 个`],['提交记录','0 次']];
   for(const [label,value] of values){const box=document.createElement('div');box.className='metric';const span=document.createElement('span'),strong=document.createElement('strong');span.textContent=label;strong.textContent=value;box.append(span,strong);$('result-summary').append(box);}
 }
-async function runTest(mode){const button=$(mode);const label=button.innerHTML;button.disabled=true;button.textContent=mode==='online'?'正在读取学校记录…':'正在运行离线自检…';try{if(mode==='online'&&dirtyLocation())throw new Error('请先选择并保存实际位置。');const r=await api('/api/test/'+mode,{});renderResult(r.result);}catch(e){toast(e.message);$('result').hidden=false;$('result').classList.add('error');$('result-title').textContent=e.message;$('result-summary').replaceChildren();$('result-json').textContent='未提交任何打卡或报告记录。';$('result-time').textContent='';}finally{button.disabled=false;button.innerHTML=label;}}
-$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开 Edge…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent='用 Edge 登录并导入 ↗';}});
+async function runTest(mode){testing=true;scheduleRefresh();const button=$(mode);const label=button.innerHTML;button.disabled=true;button.textContent=mode==='online'?'正在读取学校记录…':'正在运行离线自检…';try{if(mode==='online'&&dirtyLocation())throw new Error('请先选择并保存实际位置。');const r=await api('/api/test/'+mode,{});renderResult(r.result);}catch(e){toast(e.message);$('result').hidden=false;$('result').classList.add('error');$('result-title').textContent=e.message;$('result-summary').replaceChildren();$('result-json').textContent='未提交任何打卡或报告记录。';$('result-time').textContent='';}finally{testing=false;button.disabled=false;button.innerHTML=label;refresh().catch(()=>{});}}
+$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开登录页面…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent=hostedMode?'打开学校登录页面 ↗':'用 Edge 登录并导入 ↗';}finally{if(hostedMode)$('password').value='';}});
 $('show-password').addEventListener('click',()=>{const hide=$('password').type==='password';$('password').type=hide?'text':'password';$('show-password').textContent=hide?'隐藏':'显示';});
 $('cancel-login').addEventListener('click',async()=>{try{await api('/api/login/cancel',{});toast('已请求取消，窗口稍后关闭。');}catch(e){toast(e.message);}});
-$('forget').addEventListener('click',async()=>{try{await api('/api/session/forget',{});await refresh();toast('本机会话已清除。');}catch(e){toast(e.message);}});
-$('location-form').addEventListener('submit',async e=>{e.preventDefault();try{const r=await api('/api/location',currentLocation());fillLocation(r.location);toast('位置已保存在本机。');}catch(e){toast(e.message);}});
+$('forget').addEventListener('click',async()=>{try{await api('/api/session/forget',{});document.dispatchEvent(new CustomEvent('school-session-cleared'));await refresh();toast('学校会话已清除。');}catch(e){toast(e.message);}});
+$('location-form').addEventListener('submit',async e=>{e.preventDefault();try{const r=await api('/api/location',currentLocation());fillLocation(r.location);await refresh();toast(hostedMode?'位置已保存在当前会话。':'位置已保存在本机。');}catch(e){toast(e.message);}});
 for(const id of ['latitude','longitude','coordinate-system'])$(id).addEventListener('change',()=>{if($('latitude').value&&$('longitude').value){const loc=currentLocation();if(Number.isFinite(loc.latitude)&&Number.isFinite(loc.longitude)&&Math.abs(loc.latitude)<=90&&Math.abs(loc.longitude)<=180){showPoint(loc.latitude,loc.longitude,loc.coordinate_system,true);$('converted').textContent='位置已修改，请保存后运行检查。';}}});
 $('offline').addEventListener('click',()=>runTest('offline'));$('online').addEventListener('click',()=>runTest('online'));
 $('prepare-checkin').addEventListener('click',async()=>{
   if(dirtyLocation()){toast('请先保存当前实际位置。');return;}
-  submitting=true;$('prepare-checkin').disabled=true;$('prepare-checkin').textContent='正在预检查…';$('checkin-message').textContent='正在检查学校会话、时段和位置…';
+  submitting=true;scheduleRefresh();$('prepare-checkin').disabled=true;$('prepare-checkin').textContent='正在预检查…';$('checkin-message').textContent='正在检查学校会话、时段和位置…';
   try{const r=await api('/api/checkin/prepare',{});confirmation=r.confirmation;$('checkin-preview').replaceChildren();
     for(const [label,value] of [['日期',r.preview.businessDate],['位置',r.preview.name],['地址',r.preview.address],['学校坐标',`${r.preview.longitude.toFixed(6)}, ${r.preview.latitude.toFixed(6)} · GCJ-02`],['允许时段',`${r.preview.window.start}–${r.preview.window.end}`]]){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;$('checkin-preview').append(dt,dd);}
     $('confirm-location').checked=false;$('submit-checkin').disabled=true;$('checkin-error').hidden=true;$('checkin-dialog').showModal();
@@ -81,7 +85,7 @@ $('confirm-location').addEventListener('change',()=>{$('submit-checkin').disable
 $('close-confirmation').addEventListener('click',()=>{$('checkin-dialog').close();confirmation='';});
 $('submit-checkin').addEventListener('click',async()=>{
   if(!confirmation||!$('confirm-location').checked||submitting)return;
-  submitting=true;$('submit-checkin').disabled=true;$('close-confirmation').disabled=true;$('confirm-location').disabled=true;
+  submitting=true;scheduleRefresh();$('submit-checkin').disabled=true;$('close-confirmation').disabled=true;$('confirm-location').disabled=true;
   $('submit-checkin').textContent='正在复核并提交…';liveProgress.hidden=false;liveProgress.textContent='正在做提交前检查，请勿重复点击。';
   const ticket=confirmation;confirmation='';
   try{const r=await api('/api/checkin',{confirmation:ticket,confirm:true,actual_location_confirmed:true});const result=r.result;
@@ -96,4 +100,7 @@ $('checkin-dialog').addEventListener('cancel',e=>{if(submitting)e.preventDefault
 const campuses={shahe:[30.6752,104.0975],qingshuihe:[30.7528,103.9313]};
 function viewCampus(key){map.setView(campuses[key],16);for(const name of Object.keys(campuses))$('campus-'+name).setAttribute('aria-pressed',String(name===key));}
 try{map=L.map('map',{scrollWheelZoom:true}).setView(campuses.shahe,16);const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'}).addTo(map);let tileErrors=0;tiles.on('tileerror',()=>{if(++tileErrors>2)$('map-tip').textContent='底图暂时不可用，可手动输入坐标';});map.on('click',e=>{$('coordinate-system').value='wgs84';$('latitude').value=e.latlng.lat.toFixed(7);$('longitude').value=e.latlng.lng.toFixed(7);showPoint(e.latlng.lat,e.latlng.lng);$('converted').textContent='已选地图位置，请保存。';});for(const key of Object.keys(campuses))$('campus-'+key).addEventListener('click',()=>viewCampus(key));}catch(e){$('map-tip').textContent='地图未加载，可手动输入经纬度。';}
-refresh().catch(e=>toast(e.message));setInterval(()=>refresh().catch(()=>{}),1000);
+let refreshTimer;
+function scheduleRefresh(){clearTimeout(refreshTimer);if(document.hidden)return;const busy=loginBusy||submitting||testing||operationBusy;refreshTimer=setTimeout(()=>refresh().catch(()=>{}),busy?2000:30000);}
+document.addEventListener('visibilitychange',()=>{clearTimeout(refreshTimer);if(!document.hidden)refresh().catch(()=>{});});
+refresh().catch(e=>toast(e.message));

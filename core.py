@@ -114,6 +114,7 @@ def normalize_location(value):
 
 class ReadOnlyTransport(Transport):
     def __init__(self, snapshot, timeout=8):
+        self.snapshot = snapshot
         self.user_agent = snapshot['user_agent']
         self.timeout = timeout
         self.jar = http.cookiejar.CookieJar()
@@ -135,10 +136,24 @@ class ReadOnlyTransport(Transport):
             raise AuthRequired('session_rejected', 'session')
         if not allowed_read(method, url) or form is not None or payload is not None:
             raise ToolError('write_blocked', 'readonly_guard')
-        return super().request(method, url, stage=stage, headers=headers)
+        try:
+            return super().request(method, url, stage=stage, headers=headers)
+        finally:
+            self.save()
 
     def save(self):
-        pass
+        # Keep Set-Cookie rotations/deletions in the caller's isolated snapshot.
+        original = {(c['name'], c['domain'], c.get('path', '/')): c for c in self.snapshot['cookies']}
+        cookies = []
+        for cookie in self.jar:
+            if cookie.is_expired():
+                continue
+            value = dict(original.get((cookie.name, cookie.domain, cookie.path), {}))
+            value.update(name=cookie.name, value=cookie.value, domain=cookie.domain, path=cookie.path,
+                         expires=cookie.expires if cookie.expires is not None else -1,
+                         secure=cookie.secure, httpOnly=cookie.has_nonstandard_attr('HttpOnly'))
+            cookies.append(value)
+        self.snapshot['cookies'] = cookies
 
 
 class ReadOnlySchool(School):

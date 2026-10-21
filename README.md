@@ -1,8 +1,14 @@
-# 晚安成电 · 本机签到
+# 晚安成电 · 测试组 Web 与本机签到
+
+此仓库是 [`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) 的 fork，当前开发仓库为 [`Mr-Pian/GoodnightUESTC-Web`](https://github.com/Mr-Pian/GoodnightUESTC-Web)。新增的 Docker 服务端提供独立用户会话、远程学校登录页面，以及 HTTPS 和测试组入口认证；浏览器可保存加密学校会话包，后端按需恢复到独立内存；服务器持久卷仅保存加密密钥、恢复许可元数据及最小提交尝试日志。部署步骤、配置、更新与回滚见 **[Docker 与自托管部署](deploy/README.md)**。
+
+已有 Nginx 的服务器可参考 [Nginx 反向代理与端口配置](deploy/README.md#nginx)。Docker 模式默认在当前浏览器记住登录，优先使用 IndexedDB，失败时回退 localStorage；加密包最多保留 7 天，学校会话失效时需重登。服务器工作台仍按空闲 30 分钟／创建满 8 小时清理，但可从浏览器恢复。架构、兼容性、资源占用和次日登录规则见 [登录状态与有效期](deploy/README.md#sessions)。
+
+下文的 Edge、加密本地文件和 `127.0.0.1` 说明适用于原有本机运行模式；Docker 模式以部署说明为准。
 
 一个在本机运行的签到工具，提供 Windows 版和独立 Android 手机版：登录本人学校账号，在地图上选择实际位置，确认后向学校签到，再回读学校记录核对结果。
 
-不需要服务器、Docker、Node.js、数据库安装或地图 API Key。Windows 版密码不落盘、Cookie 在本机加密保存；Android 版通过官方网页登录，会话保存在手机应用中。
+本机版本不需要服务器、Docker、Node.js、数据库安装或地图 API Key。Windows 版密码不落盘、Cookie 在本机加密保存；Android 版通过官方网页登录，会话保存在手机应用中。
 
 **手机用户：** [下载 Android 安装包](downloads/GoodnightUESTC-Android.apk) · [Android 完整使用和编译说明](android/README.md)。Android 8.0+，手机独立运行，不需要电脑开机。当前为测试版，先使用“在线检查 / 只读预检查”确认流程。
 
@@ -19,7 +25,7 @@
 只需要 **Python 3.10+** 和 **Microsoft Edge**。拉取本仓库后双击 `start.cmd`。
 
 ```powershell
-git clone https://github.com/LCX-luo/GoodnightUESTC.git GoodNightUESTC
+git clone https://github.com/Mr-Pian/GoodnightUESTC-Web.git GoodNightUESTC
 cd GoodNightUESTC
 .\start.cmd
 ```
@@ -32,7 +38,7 @@ cd GoodNightUESTC
 python bootstrap.py
 ```
 
-项目已在当前电脑安装好自己的 `.venv`，不依赖父目录中的旧项目。
+首次安装后，项目使用自己的 `.venv`，不依赖其他项目的环境。
 
 ### 无 Python 的用户
 
@@ -49,7 +55,7 @@ python bootstrap.py
 5. 核对弹窗中的日期、地址、GCJ-02 坐标和时段，勾选本人实际在场的确认项，再点击“确认并提交签到”。
 6. 程序发送一次签到请求，并回读学校当天记录。只有读到当天正常 `CHECKED_IN` 才显示“签到已确认”。
 
-程序不会绕过学校 MFA，不会自动提交报告，也没有无人值守每日计划。学校要求重新认证时需本人重新登录。签到成功与否由学校系统判定，本项目尚未使用开发者的真实账号完成端到端签到验证。
+程序不会绕过学校 MFA，不会自动提交报告，也没有无人值守每日计划。学校要求重新认证时需本人重新登录。签到成功与否由学校系统判定；自动化测试使用合成数据和 mock，不能作为真实学校端提交成功的证明。
 
 ## 地图与坐标
 
@@ -64,6 +70,30 @@ python bootstrap.py
 - 选点是用户配置，不代表实时 GPS。请求里的定位精度、定位耗时均为 0，网络类型标为 unknown，不伪称设备测量数据。
 
 ## 不上传打卡记录的测试
+
+### 定时器离线模拟版
+
+仓库附带 `scheduler_simulation.py`，用于先验证固定测试点、每日定时、进程常驻和本机防重复逻辑。它是独立的离线脚本，不导入签到模块或学校网络客户端；数据只写入 `private-data/simulation.sqlite3`，记录会标记为 `LOCAL_SIMULATION_ONLY`，**不会创建学校签到记录**。默认按运行机器的本地时区每天 21:30 触发，进程需要保持运行。
+
+```sh
+python scheduler_simulation.py --latitude 0 --longitude 0 --label "synthetic test point"
+```
+
+快速写入一条当天的本地模拟记录：
+
+```sh
+python scheduler_simulation.py --latitude 0 --longitude 0 --simulate-now
+```
+
+改用其他时间、查看记录或只检查一次当前时间：
+
+```sh
+python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15
+python scheduler_simulation.py --show
+python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15 --check-once
+```
+
+模拟器每天最多写一条本机记录；重复启动也不会在同一天重复写入。这里的坐标只是测试数据，不能作为已到场或学校签到成功的证明。
 
 页面保留两个独立测试按钮，均不调用签到接口：
 
@@ -86,7 +116,9 @@ python bootstrap.py
 .\test.cmd
 ```
 
-目前 **40 项合成数据测试**覆盖：Cookie 加密、自动导入、取消登录、CSRF、只读请求拦截、坐标转换、确认令牌过期/重复使用、位置变更、围栏和时段限制、重复提交保护、提交后的记录回读，以及超时后的恢复。没有真实学校凭据，没有真实签到请求。
+现有合成数据测试覆盖：Cookie 加密、自动导入、取消登录、CSRF、只读请求拦截、坐标转换、确认令牌过期/重复使用、位置变更、围栏和时段限制、重复提交保护、提交后的记录回读，以及超时后的恢复。没有真实学校凭据，没有真实签到请求。
+
+另有离线调度器测试，验证到点触发、日期防重复和模拟记录标记。
 
 额外的 Edge 测试：
 
@@ -117,7 +149,7 @@ python bootstrap.py
 - `location.json`：用户选择的位置。
 - `attempts.sqlite3`：本机按账号哈希与业务日期保存的提交尝试。
 
-密码只在本次登录过程中使用，不写入配置或日志。网页不返回 Cookie 原文。“清除本机会话”不会清除当天防重复记录，也不会影响你日常 Edge 的登录。
+密码只在本次登录过程中使用，不写入配置或日志。本机模式保留页面密码输入框供用户自行编辑；Docker 模式发起登录后会清空该输入框。网页不返回 Cookie 原文。“清除本机会话”不会清除当天防重复记录，也不会影响你日常 Edge 的登录。
 
 `.gitignore` 排除了私人数据、虚拟环境、日志和构建产物。不要手动把这些资料添加到 Git。服务只监听 `127.0.0.1:8090`，有 Host、Origin 和 CSRF 检查，不对公网开放。
 
@@ -137,6 +169,12 @@ python bootstrap.py --install-only
 
 ```text
 app.py                  本机服务、CSRF 与确认令牌
+server.py               Docker 服务端入口，单进程多线程
+hosted.py               独立内存会话、生命周期与限速
+session_packages.py     浏览器会话包加密、设备绑定与恢复许可
+static/session-*.js     浏览器保存、存储降级与按需恢复
+Dockerfile / compose.yaml 容器构建和自托管服务
+deploy/                 HTTPS 网关与部署说明
 browser_login.py        Edge 登录和 Cookie 自动导入
 core.py                 加密存储、坐标转换、只读诊断
 checkin.py              手动提交、按日防重复和记录回读
@@ -145,6 +183,7 @@ progress.py             操作阶段和等待时间
 bootstrap.py            首次自动安装与启动
 static/                 中文界面、地图和确认弹窗
 tests/                  合成测试与 Edge 页面测试
+scheduler_simulation.py 离线定时模拟器，不连接学校服务
 vendor/moonuestc/       复用的上游协议/坐标/加密模块
 ```
 

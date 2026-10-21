@@ -50,7 +50,10 @@ class SubmissionTransport(ReadOnlyTransport):
     def request(self, method, url, *, stage, headers=None, form=None, payload=None):
         if self.permit and method == 'POST' and url == SUBMIT_URL and stage == 'checkin_post' and isinstance(payload, dict) and form is None:
             self.permit = False  # One POST per transport, even if the response fails.
-            return Transport.request(self, method, url, stage=stage, headers=headers, payload=payload)
+            try:
+                return Transport.request(self, method, url, stage=stage, headers=headers, payload=payload)
+            finally:
+                self.save()
         return super().request(method, url, stage=stage, headers=headers, form=form, payload=payload)
 
 

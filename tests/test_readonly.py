@@ -1,6 +1,9 @@
 import json
+from copy import deepcopy
+from email.message import Message
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 from app import create_app
@@ -18,6 +21,32 @@ POINT = {'name': '测试位置', 'latitude': 30.7528, 'longitude': 103.9313, 'co
 
 
 class GuardTests(unittest.TestCase):
+    def test_set_cookie_rotation_and_deletion_survive_request_failure_without_cross_user_state(self):
+        snapshot = deepcopy(SNAPSHOT)
+        snapshot['cookies'].append({**snapshot['cookies'][0], 'name': 'obsolete', 'value': 'remove-me'})
+        transport = ReadOnlyTransport(snapshot)
+        other = ReadOnlyTransport(deepcopy(SNAPSHOT))
+        url = ORIGIN + '/daily-checkin/api/student-checkin-record/today'
+
+        def receive(transport, *args, **kwargs):
+            from unittest.mock import Mock
+            headers = Message()
+            headers.add_header('Set-Cookie', 'SESSION=rotated-cookie; Path=/; Secure; HttpOnly; Max-Age=3600')
+            headers.add_header('Set-Cookie', 'obsolete=; Path=/; Max-Age=0')
+            transport.jar.extract_cookies(Mock(info=lambda: headers), urllib.request.Request(url))
+            raise ToolError('timeout')
+
+        # The standard CookieJar parses real Set-Cookie headers before a failed response.
+        with patch('core.Transport.request', autospec=True, side_effect=receive):
+            with self.assertRaises(ToolError):
+                transport.request('GET', url, stage='today')
+        self.assertEqual(len(snapshot['cookies']), 1)
+        current = snapshot['cookies'][0]
+        self.assertEqual(current['value'], 'rotated-cookie')
+        self.assertTrue(current['secure'] and current['httpOnly'])
+        self.assertGreater(current['expires'], now().timestamp())
+        self.assertEqual(next(iter(other.jar)).value, SNAPSHOT['cookies'][0]['value'])
+
     def test_today_uses_existing_authorization_and_reenters_only_when_expired(self):
         from unittest.mock import MagicMock
         from core import read_today, AuthRequired
