@@ -3,6 +3,7 @@ private-data/
 __pycache__/
 *.log
 *.png
+!docs/images/web-preview.png
 tests/login-public-reference.html
 tests/login-script-reference.js
 tests/osm-shahe-reference.xml
