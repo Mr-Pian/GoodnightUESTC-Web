@@ -81,9 +81,30 @@ Chromium 临时 profile、缓存和临时缓冲文件位于 `/tmp` tmpfs。后�
 
 ## 后端安装与启动
 
-仓库只交付应用容器：Web 静态资源、Waitress 和学校登录所需 Chromium。域名、公网端口、反向代理及 HTTPS 证书由部署者管理；Compose 不启动代理，不申请证书，不修改宿主机配置。建议 Linux 服务器至少 2 核、2 GB 内存，能访问学校官方服务。使用 Docker Engine 和 Compose v2；下文 `up --wait` 需要 Compose 2.20 或更新版本，可选的共享网络覆盖文件需要 **2.24.4 或更新版本**。推荐交互安装器另需宿主机 Python 3.8+，只使用标准库，不需要 pip 安装应用依赖。
+仓库只交付应用容器：Web 静态资源、Waitress 和学校登录所需 Chromium。域名、公网端口、反向代理及 HTTPS 证书由部署者管理；Compose 不启动代理，不申请证书，不修改宿主机配置。推荐 Linux 服务器 2 核、4 GiB 内存，2 GiB 小主机需减并发并实测，详见[资源预算与观测](RESOURCES.md)。逐条命令见 **[固定版本部署流程](QUICKSTART.md)**。
+
+要求 Docker CLI / Engine 均 >= 24.0.0、Compose >= 2.20.0；可选共享网络覆盖文件需要 **Compose >= 2.24.4**。源码构建额外要求 **buildx >= 0.12.0** 与可访问的 builder，不支持 legacy builder 或 `DOCKER_BUILDKIT=0`。预构建镜像运行不要求 buildx。安装器另需宿主机 Python 3.8+ 标准库，不需要 pip 安装应用依赖。
+
+```sh
+# 不拉取镜像或下载应用依赖，先检查本地工具和 daemon 连接。
+python3 deploy/preflight.py
+# 仅使用已发布镜像时：
+python3 deploy/preflight.py --image-only
+```
+
+安装器也会在询问、保存配置和下载依赖前完成该检查，错误会区分版本、daemon 权限与 buildx / builder。Docker context、buildx 存在不表示 PyPI、Debian 源或 Chromium 下载网络已通。
 
 ### 推荐：交互安装
+
+使用 Release 的 Linux amd64 预构建镜像，跳过服务器本地构建：
+
+```sh
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+```
+
+对应镜像必须已成功发布并允许拉取；该模式将镜像引用写入 `.env`，执行 `pull` 与 `up --no-build --wait`。也可组合 `--configure-only` 或 `--proxy-network NAME`。GHCR 首次发布默认访问级别需由维护者确认，未公开时可改用下方源码构建。
+
+自行构建源码：
 
 ```sh
 git clone --branch web https://github.com/Mr-Pian/GoodnightUESTC-Web.git
@@ -126,7 +147,7 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 - `PUBLIC_ORIGIN`：浏览器实际访问的完整 HTTPS origin，例如 `https://checkin.example.com:60000`。使用小写域名，不含路径、尾部斜线、查询或凭据；当前应用部署在站点根路径，不支持子路径挂载。
 - `GATEWAY_SECRET`：填入生成的随机值，与现有代理配置中的内部密钥一致。不要复用学校密码；无需创建成员文件或网站账号。
 - `BACKEND_PORT`：宿主机代理连接的本地端口，默认 `18090`，仅绑定 `127.0.0.1`。
-- `BACKEND_IMAGE`：本地构建镜像的唯一标签，例如 `goodnightuestc-web:你的提交号`，保留旧标签供回滚。仓库目前提供源码构建，尚未发布可供拉取的官方预构建镜像。
+- `BACKEND_IMAGE`：本地构建使用唯一标签，例如 `goodnightuestc-web:你的提交号`；发行镜像使用 `ghcr.io/mr-pian/goodnightuestc-web:1.0.5` 或其 digest，保留旧镜像供回滚。不要以 `latest` 作为生产回滚依据。
 - `MAP_PROVIDER` / `TIANDITU_KEY`：模板默认 `tianditu`，必须填自己的天地图地图服务 Key，配置方法见[地图配置与排障](#maps)。需要 OSM 的手动部署可显式改为 `osm`；未设置 provider 的旧配置仍兼容 `auto`。
 
 ```sh
@@ -218,6 +239,22 @@ TIANDITU_KEY=填写自己的天地图Key
 
 Key 会出现在 `/api/map-config` 响应和地图图片 URL 中，浏览器可见。使用专用地图 Key，按天地图平台规则限制允许的站点、服务权限与调用配额；不要复用学校密码、Cookie、token 或内部 `GATEWAY_SECRET`。真实 `.env` 不提交到 Git。页面保留“引自 天地图”的来源链接。
 
+### Key、部署地址与白名单的关系
+
+`.env` 的 Key 必须对应运维在天地图控制台申请的地图服务应用。`PUBLIC_ORIGIN` 则是用户实际打开的 HTTPS 地址；它用于本站 Host / Origin 校验，**不会自动同步天地图白名单**。天地图按该应用的服务权限、配额与来源规则独立决定是否返回图片。因此页面和后端都正常、只有地图空白时，应单独检查控制台的来源限制。
+
+本站与图片元素采用 `strict-origin-when-cross-origin`，浏览器向天地图发送的 Referer 通常是站点 origin，例如 `https://checkin.example.com:60000/`，不带业务路径；非标准端口、子域名、HTTPS 与测试临时域名可能使它与控制台登记值不同。**控制台具体接受域名、完整 URL、端口还是通配规则，以天地图当前填写说明为准**，不要机械复制一个带路径的整页地址，也不要假定加入服务器 IP 就允许所有用户浏览器。
+
+排查顺序：
+
+1. 在失败浏览器确认地址栏最终 HTTPS 地址，核对本站 `PUBLIC_ORIGIN`；重定向后的主域 / 子域也需考虑。
+2. 在天地图控制台确认 Key 所属应用、地图服务权限与配额，按平台规则允许该浏览器站点来源。更换域名或端口后重新核对，保存规则后留出平台生效时间。
+3. 在应用页 Network 中检查 `vec_w/wmts` 与 `cva_w/wmts` 请求的 Referer、状态和响应类型。200 也可能返回错误文本，不能只看 HTTP 状态。Key 截图前遮盖 `tk`；不把完整 URL 发到公开 issue。
+4. 若实际 Referer 缺失，检查代理是否覆盖 Referrer-Policy、浏览器扩展或隐私设置；不通过关闭 HTTPS 校验、全站放开 CSP 或取消所有 Key 限制解决。
+5. 更新 Key 后执行 `docker compose up -d --no-build --force-recreate backend` 并刷新页面；共享网络使用原 `-f` 组合。单纯 `restart` 不加载新环境。
+
+用户部署反馈中曾出现 Key 白名单不匹配导致空白，修正后地图可见。这与 Docker 构建代理无关。直接打开瓦片 URL、服务器 curl 成功或某一台设备成功，均不能替代实际页面来源下的验收。
+
 地图图片由**用户浏览器直连地图服务商**，服务商会看到设备 IP、站点来源和浏览区域；这些跨域图片请求不携带本站或学校 Cookie。Docker 不增加地图代理、监听端口或数据卷，服务器无需为地图开放新的入站端口。服务器的学校访问代理和 `UESTC_NETWORK_MODE` 不影响用户浏览器加载地图。天地图每个视图请求两层图片，浏览器正常使用 HTTP 缓存；页面只保留附近少量瓦片，不批量下载或预取离线地图。
 
 后端已按配置发送 CSP：地图仅增加图片来源，`script-src` 和 `connect-src` 仍为 `'self'`。优先保留后端响应的 CSP。若现有 Nginx 或其他代理另外设置 CSP，多个策略会同时生效，更宽松的一份不能覆盖更严格的一份；其 `img-src` 也必须允许 `'self'`、`data:` 和启用的地图图片域名：
@@ -241,6 +278,19 @@ OSM 使用 WGS-84，天地图使用 CGCS2000，本项目在当前选点尺度下
 
 ## 构建下载与运行时出口
 
+优先使用预构建镜像可避免服务器执行下列构建下载；镜像本身的拉取仍需要服务器访问 GHCR。源码构建各阶段独立，不应把一次 PyPI 200 当作“代理全通”：
+
+| 阶段 | 实际发起方与目标 | 如何判断 |
+| --- | --- | --- |
+| 基础镜像 / 发行镜像拉取 | Docker daemon / BuildKit → 镜像仓库 | builder 的 RUN 代理参数不能自动解决拉取失败 |
+| pip | Dockerfile RUN → PyPI 索引与 wheel 文件站点 | 索引 HEAD 成功不证明 wheel 大文件下载成功 |
+| APT | `playwright install --with-deps` → 配置中的 Debian 软件源 | 包索引、依赖包与大包持续下载分别观察；APT 可能用 HTTP 与 `_apt` 用户 |
+| Chromium | Playwright → 对应版本的浏览器下载 CDN | APT 完成不代表 Chromium CDN 可达；是独立下载 |
+| 学校运行时 | 应用容器 → 学校固定服务 | 由 `UESTC_NETWORK_MODE` 与显式运行时代理决定 |
+| 地图 | 用户浏览器 → 天地图 / OSM | 与服务器 build / 学校出口分别排查 |
+
+先执行 `deploy/preflight.py`；工具不支持时不要进入反复 pip 下载。构建详细日志停在某个 APT 大包并不一定是死锁：先观察传输、持续速度和有界超时，短连接测速不代表长连接吞吐，不自动改源、关闭 TLS 或无限重试。
+
 基础镜像可通过构建参数覆盖；默认值不固定为某一平台的摘要。使用镜像摘要时，由部署者核对来源、平台并安排更新。
 
 ```sh
@@ -252,6 +302,8 @@ docker compose build --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg 
 ```
 
 Docker 的预定义构建代理参数用于 RUN 内的 pip / APT / Playwright 下载，不会自动解决 Docker daemon / BuildKit 拉取 `FROM` 镜像时的网络问题；后者使用部署者的 Docker 网络和镜像源配置。不要把代理写成 Dockerfile `ENV`、硬编码私网地址、默认使用 host 网络或关闭 HTTPS 校验。重复构建复用缓存，诊断时使用明文进度日志；日志和代理凭据均需保护。
+
+上面的 `--build-arg HTTP_PROXY` 等只在构建命令使用；不要加入 Compose 的服务 `environment`、镜像 `ENV` 或公共 `.env.example`。源码构建安装器固定 `COMPOSE_BAKE=false`，减少环境意外启用 bake 的差异，但仍明确要求安装 buildx。构建完成后用 `up --no-build`，避免在没有构建代理参数时再次触发下载。维护 shell 中的代理变量按需 `unset`，示例见 [逐条部署命令](QUICKSTART.md#6-需要源码构建时)。
 
 应用运行时默认 `UESTC_NETWORK_MODE=direct`，忽略系统代理。若访问学校必须经过出口代理，需在自己维护的 Compose 覆盖文件中显式添加 `HTTPS_PROXY` 并将模式改为 `system`。这是与镜像构建分开的配置，学校 TLS 校验始终启用。容器内 `127.0.0.1` 指向容器自身。
 

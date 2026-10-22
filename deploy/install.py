@@ -11,6 +11,11 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
+if __package__:
+    from .preflight import check_compose, check_tools
+else:
+    from preflight import check_compose, check_tools
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSIGNMENT = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=.*$')
@@ -61,7 +66,7 @@ def prompt_value(label, current, valid, message, *, hidden=False):
         print(message, file=sys.stderr)
 
 
-def configure(root, proxy_network=None):
+def configure(root, proxy_network=None, image=None):
     path = root / '.env'
     if path.is_symlink():
         raise ValueError('.env 为符号链接，请按部署文档手动配置，安装器不会替换它。')
@@ -86,6 +91,8 @@ def configure(root, proxy_network=None):
         updates['GATEWAY_SECRET'] = secrets.token_hex(32)
     if proxy_network:
         updates['PROXY_NETWORK'] = proxy_network
+    if image:
+        updates['BACKEND_IMAGE'] = image
     lines, written = [], set()
     for line in text.splitlines():
         match = ASSIGNMENT.match(line)
@@ -113,40 +120,41 @@ def configure(root, proxy_network=None):
     print('内部代理密钥已保留。' if gateway else '已生成内部代理密钥，请从本机 .env 配置到自己的反向代理。')
 
 
-def check_compose(proxy_network):
-    try:
-        result = subprocess.run(['docker', 'compose', 'version', '--short'], check=True,
-                                capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError):
-        raise ValueError('需要 Docker Engine 和 Compose v2；仅生成配置可使用 --configure-only。') from None
-    version = re.search(r'(\d+)\.(\d+)\.(\d+)', result.stdout)
-    minimum = (2, 24, 4) if proxy_network else (2, 20, 0)
-    if not version or tuple(map(int, version.groups())) < minimum:
-        raise ValueError('Compose 版本至少需要 ' + '.'.join(map(str, minimum)) + '。')
-
-
 def main(argv=None, *, root=ROOT):
     parser = argparse.ArgumentParser(description='交互配置天地图并安装 Docker 后端；不管理反向代理或证书。')
     parser.add_argument('--configure-only', action='store_true', help='仅生成/更新 .env，不调用 Docker')
     parser.add_argument('--proxy-network', metavar='NAME', help='使用已有容器代理网络（不会创建网络）')
+    parser.add_argument('--image', metavar='IMAGE', help='拉取并运行指定的已发布 Linux amd64 镜像，不进行源码构建')
     args = parser.parse_args(argv)
     try:
         if args.proxy_network and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', args.proxy_network):
             raise ValueError('代理网络名称仅支持字母、数字、点、下划线和短横线。')
+        if args.image and (len(args.image) > 256 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./:@-]*', args.image)):
+            raise ValueError('请填写有效的镜像引用，不得包含空格、凭据或 shell 表达式。')
         if not sys.stdin.isatty():
             raise ValueError('请在交互式终端运行安装器；CI / 自动化请直接配置 .env 并运行 Docker Compose。')
         if not args.configure_only:
-            check_compose(args.proxy_network)
-        configure(root, args.proxy_network)
+            print('\n'.join(check_tools(args.proxy_network, build=not args.image)))
+        if args.image:
+            configure(root, args.proxy_network, image=args.image)
+        else:
+            configure(root, args.proxy_network)
         if args.configure_only:
             return 0
         command = ['docker', 'compose', '--env-file', str(root / '.env'), '-f', str(root / 'compose.yaml')]
         if args.proxy_network:
             command.extend(['-f', str(root / 'deploy/compose.proxy-network.yaml')])
-        # Shell exports must not override the four credentials/settings just configured.
+        # Shell exports must not override settings just saved by this installer.
         environment = {key: value for key, value in os.environ.items()
-                       if key not in ('PUBLIC_ORIGIN', 'GATEWAY_SECRET', 'MAP_PROVIDER', 'TIANDITU_KEY', 'PROXY_NETWORK')}
-        for arguments in (['config', '--quiet'], ['up', '-d', '--build', '--wait', 'backend'], ['ps', 'backend']):
+                       if key not in ('PUBLIC_ORIGIN', 'GATEWAY_SECRET', 'MAP_PROVIDER', 'TIANDITU_KEY', 'PROXY_NETWORK', 'BACKEND_IMAGE')}
+        environment['COMPOSE_BAKE'] = 'false'
+        operations = [['config', '--quiet']]
+        if args.image:
+            operations.extend([['pull', 'backend'], ['up', '-d', '--no-build', '--wait', 'backend']])
+        else:
+            operations.append(['up', '-d', '--build', '--wait', 'backend'])
+        operations.append(['ps', 'backend'])
+        for arguments in operations:
             subprocess.run(command + arguments, cwd=root, env=environment, check=True)
         print('应用已启动并通过容器健康检查；请继续按部署文档接入自己的 HTTPS 反向代理。')
         return 0
