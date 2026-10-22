@@ -6,7 +6,7 @@
 
 ## 项目描述
 
-此仓库fork自[`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) ，当前开发仓库为 [`Mr-Pian/GoodnightUESTC-Web`](https://github.com/Mr-Pian/GoodnightUESTC-Web)。本分支只维护 Docker / Web 部. 用户通过浏览器使用，服务器负责独立学校登录、请求代发、提交前检查和学校记录回读。正式入口为 `server.py`。
+此仓库fork自[`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) ，当前开发仓库为 [`Mr-Pian/GoodnightUESTC-Web`](https://github.com/Mr-Pian/GoodnightUESTC-Web)。本分支只维护 Docker / Web 部署。用户通过浏览器使用，服务器负责独立学校登录、请求代发、提交前检查和学校记录回读。正式入口为 `server.py`。
 
 学校会话默认以加密包保存在用户浏览器，后端按需恢复到独立内存。服务器持久卷保存加密密钥、恢复许可元数据和最小提交尝试日志，不保存学校密码或学校 Cookie 快照数据库。
 
@@ -23,7 +23,7 @@ checkin.py               单次提交、按日防重复与学校记录回读
 network.py / progress.py 网络路线、超时与操作进度
 static/                  Web 界面、地图、远程登录和浏览器保存
 Dockerfile / compose.yaml 容器构建与自托管服务
-deploy/                  HTTPS 网关、Nginx 示例与部署说明
+deploy/                  交互安装器、部署说明、可选共享代理网络配置
 tests/                   合成测试与 Web 界面测试
 scheduler_simulation.py  独立离线模拟器，不连接学校
 vendor/moonuestc/        复用的协议、坐标与传输模块
@@ -33,13 +33,21 @@ vendor/moonuestc/        复用的协议、坐标与传输模块
 
 ## 部署入口
 
-准备可访问学校官方服务的 Linux 服务器、Docker Engine、Compose v2 和专用域名。完整配置、HTTPS、更新与回滚见 **[Docker 与自托管部署](deploy/README.md)**。
+准备可访问学校官方服务的 Linux 服务器、Docker Engine 和 Compose v2。**Docker 只启动应用**，包含网页、后端和登录所需 Chromium；公网域名、反向代理及 HTTPS 证书由部署者自行接入。安装、配置、更新、回滚和备份见 **[后端部署说明](deploy/README.md#后端安装与启动)**。
 
-- **使用项目自带 Caddy：** 按[首次部署](deploy/README.md#首次部署)配置 `.env` 并构建启动，无需创建网站账号。
-- **使用现有宿主机 Nginx：** 按 [Nginx 反向代理与端口配置](deploy/README.md#nginx)运行后端容器；该文档包含 HTTPS、来源头覆盖、限速、超时和日志设置示例。
-- 公网开放 TCP **80 / 443**；Caddy 的 UDP 443 为可选 HTTP/3 端口。容器 **8090 不向公网开放**。Nginx 方案仅将后端映射到宿主机 `127.0.0.1:18090`。
+拉取源码后，推荐在服务器交互终端运行：
 
-网页公开可访问，不设置额外的网站账号或 HTTP Basic Auth；用户直接在网页完成学校统一认证。GATEWAY_SECRET` 用于反向代理与后端之间的内部校验，由运维配置，用户无需输入。后端采用单进程、单副本、多线程模式，不支持直接增加多个 WSGI worker 或后端副本。
+```sh
+python3 deploy/install.py
+```
+
+安装器只需要宿主机 Python 3.8+ 标准库，不要求在宿主机安装应用依赖。它询问完整 HTTPS 地址和**运维自己申请的天地图 Key**（输入不回显，不能为空），生成缺失的内部代理密钥，将配置保存到权限 `0600` 的 `.env`，然后构建并等待后端健康。再次运行可回车保留已有地址和 Key，内部密钥和其他自定义配置保留。只生成配置可加 `--configure-only`；已有容器代理网络可加 `--proxy-network 网络名`，不会创建网络或修改代理。CI / 无人值守部署可直接维护 `.env` 并运行 Compose。
+
+- 默认仅映射 `127.0.0.1:18090 → 8090`，供现有宿主机代理连接，不绑定公网 80/443、不申请证书。
+- 已有容器代理可使用 [共享网络覆盖文件](deploy/compose.proxy-network.yaml)，访问 `backend:8090` 并取消宿主机端口映射。
+- `PUBLIC_ORIGIN` 显式填写完整 HTTPS origin，支持非标准端口，例如 `https://checkin.example.com:60000`。按照[代理接入约定](deploy/README.md#proxy-contract)配置头、超时和缓存；未接入代理时，后端 `/healthz` 返回 200、普通页面与 API 返回 403 属于预期。
+
+网页不设置额外的网站账号或 HTTP Basic Auth；用户直接完成学校统一认证。`GATEWAY_SECRET` 用于反向代理与后端之间的内部校验，由运维配置，用户无需输入。后端采用单进程、单副本、多线程模式，不支持直接增加多个 WSGI worker 或后端副本。目前提供源码构建，未发布官方预构建镜像；发行镜像和 Release 可在版本验收后另行发布。
 
 ## 使用流程
 
@@ -99,13 +107,34 @@ Docker 的 `attempts` 卷包含：
 
 ## 地图与坐标
 
-使用 Leaflet 1.9.4 与 OpenStreetMap 底图，保留署名，正常使用浏览器缓存，不批量下载瓦片。
+使用随应用提供的 Leaflet 1.9.4，支持**天地图官方 HTTPS 瓦片**和 OpenStreetMap。国内部署建议配置天地图；不加载额外地图 SDK，不要求 WebGL。天地图叠加矢量底图与中文注记两层，浏览器按当前视图加载并正常使用 HTTP 缓存，不批量下载或预取离线地图。
+
+在[天地图开发资源](https://lbs.tianditu.gov.cn/)申请自己的、可用于网页调用地图服务的 Key，按平台规则设置站点限制与配额。推荐安装器会询问并保存 Key；手动部署则在服务器 `.env` 填写：
+
+```dotenv
+MAP_PROVIDER=tianditu
+TIANDITU_KEY=填写自己的天地图Key
+```
+
+更新到包含此功能的代码后，运行 `docker compose up -d --build backend`，然后刷新网页。天地图的 Key 会出现在浏览器配置和瓦片请求中，属于浏览器可见的地图调用凭据，应使用专用 Key 并配置平台限制；不要填入学校密码、学校 Cookie 或内部 `GATEWAY_SECRET`，也不要把真实 `.env` 提交到仓库。
+
+| 配置 | 默认底图与行为 |
+| --- | --- |
+| `MAP_PROVIDER=tianditu`（安装器与 `.env.example` 推荐值） | 默认天地图；缺少 Key 时启动报错，避免配置遗漏后静默使用 OSM |
+| `MAP_PROVIDER=auto`（未设置变量时的兼容值） | 有 `TIANDITU_KEY` 时优先天地图，没有时保持旧版 OpenStreetMap |
+| `MAP_PROVIDER=osm` | 默认 OpenStreetMap；配置了天地图 Key 时仍可在页面切换到天地图 |
+
+“地图底图”下拉框用于真正切换地图服务；“输入坐标系”只说明经纬度的来源。底图选择只作用于当前页面，不修改输入值、标记或已保存位置。加载失败会显示提示及“重试底图”；不会自动反复重试或在网络失败后自行切换服务。未配置天地图 Key 时，页面只提供 OSM。
 
 - 默认查看沙河校区，右上角可切换沙河与清水河；切换视图不会修改已保存位置。
 - 地图内滚轮缩放地图，地图外滚轮正常滚动页面。
-- 地图 / GPS 使用 WGS-84，点击地图自动选择此坐标系；高德坐标应选择 GCJ-02。
-- 学校接口使用 GCJ-02：WGS-84 做离线近似转换，GCJ-02 原样使用；GCJ-02 在 OSM 展示时做近似反算。
+- OSM / GPS 使用 WGS-84；天地图使用 CGCS2000，本项目在当前地图选点尺度下近似按 WGS-84 处理，两者并非严格相同的测量坐标系。点击两种底图均记录为 WGS-84；来自高德的坐标应选择 GCJ-02。
+- 学校接口使用 GCJ-02：WGS-84 做离线近似转换，GCJ-02 原样使用；手工输入 GCJ-02 时，在两种底图上均近似反算展示，避免重复偏移。
 - 底图不可用时仍可手动输入坐标。选点是用户配置，不代表实时 GPS；请求中的定位精度、定位耗时为 0，网络类型标为 unknown。
+
+地图图片由**用户浏览器直接访问地图服务商**，不经过后端；Docker 不包含地图代理，不需要增加端口或数据卷。服务商可以看到浏览器 IP、站点来源和浏览区域，学校凭据不会随这些跨域瓦片请求发送。后端 CSP 仅放行已支持的图片域名，脚本继续限制为本站。若反向代理另外设置 CSP，也需允许配置后的地图图片来源，详见[地图配置与排障](deploy/README.md#maps)。
+
+朋友设备出现 `tile.openstreetmap.org` 的 `ERR_CONNECTION_CLOSED` 时，应检查该设备到地图服务的连接；服务器能访问不能代表浏览器能访问。可以在失败设备直接打开 Network 中的同一图片 URL 对照。`favicon.ico` 的 404 与地图无关。天地图接入以[官方地图服务文档](https://lbs.tianditu.gov.cn/server/MapService.html)为依据，保留来源署名；Key、配额和各设备的真实网络仍需部署者实测。
 
 ## 不创建学校记录的检查
 
@@ -141,11 +170,11 @@ python tests/hosted_ui_smoke.py
 python tests/session_ui_smoke.py
 ```
 
-`hosted_ui_smoke.py` 检查隔离用户、远程登录画面与输入、密码清空、地图选点、模拟确认提交、离线自检和手机布局。`session_ui_smoke.py` 检查浏览器保存、后端重启／工作台清理后的恢复、存储降级与清除。两者拦截外部页面请求，学校操作均使用合成快照或 mock，不访问真实学校。开发时可用 `TEST_BROWSER_CHANNEL` 指定已安装的兼容浏览器通道；这不影响生产容器使用 Chromium。
+`hosted_ui_smoke.py` 检查隔离用户、远程登录画面与输入、密码清空、天地图底图与注记、瓦片失败和重试、切换底图时坐标不变、GCJ-02 展示反算、地图选点、模拟确认提交、离线自检和手机布局。`session_ui_smoke.py` 检查浏览器保存、后端重启／工作台清理后的恢复、存储降级与清除。两者拦截外部页面请求，学校操作均使用合成快照或 mock，不访问真实学校；地图也使用合成图片，不能证明真实地图服务在各设备上可达。开发时可用 `TEST_BROWSER_CHANNEL` 指定已安装的兼容浏览器通道；这不影响生产容器使用 Chromium。
 
-`tests/gateway_smoke.py` 可配合本机 Caddy（或 `CADDY_BIN`）验证无需网站密码即可打开页面、伪造代理头被覆盖及后端直连拦截。`tests/login_ui_contract.py` 是单独手动运行的学校公开登录表单兼容检查：只读取公开页、阻断 POST，不输入凭据；不属于离线测试或 CI。
+`python tests/gateway_smoke.py` 使用标准库本地测试代理验证非标准端口 Host / Origin、伪造代理头覆盖、Cookie / CSP、CSRF 及后端直连拦截，无需安装 Nginx / Caddy，也不申请证书。`tests/login_ui_contract.py` 是单独手动运行的学校公开登录表单兼容检查：只读取公开页、阻断 POST，不输入凭据；不属于离线测试或 CI。
 
-唯一 CI 为 `.github/workflows/docker.yml`，验证合成单元测试、Compose、镜像、网关配置、容器健康、后端直连拦截、公开网页访问、Chromium 和两个托管界面流程。生产镜像不包含测试文件，CI 以只读挂载方式运行界面测试。
+唯一 CI 为 `.github/workflows/docker.yml`，验证合成单元测试、Compose、常规与严格 umask 镜像构建、容器健康、代理接入约定、Chromium 和两个托管界面流程。生产镜像不包含测试文件，CI 以可读的只读挂载方式运行界面测试。
 
 ## 独立离线模拟器(弃用)
 
@@ -171,4 +200,4 @@ python scheduler_simulation.py --show
 - [MoonUESTC v0.5.1](https://github.com/horoscope963852/MoonUESTC)：协议、坐标与传输模块；许可见 [vendor/MoonUESTC-LICENSE](vendor/MoonUESTC-LICENSE)。
 - [Playwright](https://playwright.dev/python/docs/browsers)：服务器独立 Chromium 登录与合成界面测试。
 - [Leaflet](https://leafletjs.com/)：地图交互，许可见 [static/vendor/Leaflet-LICENSE](static/vendor/Leaflet-LICENSE)。
-- [OpenStreetMap](https://www.openstreetmap.org/copyright)：地图底图。
+- [天地图](https://www.tianditu.gov.cn/)与 [OpenStreetMap](https://www.openstreetmap.org/copyright)：可选地图底图。

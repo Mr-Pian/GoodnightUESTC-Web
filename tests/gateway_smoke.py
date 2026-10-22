@@ -1,15 +1,13 @@
-"""Caddy public-entry smoke test; loopback traffic only, no school requests."""
+"""Reverse-proxy contract smoke test; synthetic loopback traffic only."""
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
+from http.cookies import SimpleCookie
 from pathlib import Path
-import socket
 import sys
-import subprocess
 import tempfile
 import threading
-import time
-import urllib.error
-import urllib.request
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -17,66 +15,120 @@ from app import create_app
 from flask import request
 from hosted import HostedSettings
 from waitress import create_server
+from web_support import POINT
 
-secret = 'synthetic-gateway-secret-' * 3
-with tempfile.TemporaryDirectory() as directory:
-    app = create_app(directory, hosted=HostedSettings('https://team.example.com', secret))
-    forwarded = []
+AUTHORITY = 'team.example.com:60000'
+ORIGIN = 'https://' + AUTHORITY
+SECRET = 'synthetic-gateway-secret-' * 3
 
-    @app.before_request
-    def inspect_proxy_headers():
-        forwarded.append((request.headers.get('X-Client-IP'), request.headers.get('X-Team-User'),
-                          request.headers.get('Authorization')))
 
-    backend = create_server(app, host='127.0.0.1', port=0, threads=4)
-    threading.Thread(target=backend.run, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    path = Path(directory)
-    config = (ROOT / 'deploy' / 'Caddyfile').read_text()
-    config = config.replace('{$SITE_DOMAIN} {', 'http://team.example.com:'+str(port)+' {\n\tbind 127.0.0.1')
-    config = config.replace('backend:8090', '127.0.0.1:'+str(backend.effective_port))
-    config = config.replace('header_up -Authorization', 'header_up -Authorization\n\t\theader_up Host team.example.com')
-    (path/'Caddyfile').write_text(config)
-    env = {**os.environ, 'SITE_DOMAIN':'team.example.com', 'ACME_EMAIL':'admin@example.com', 'GATEWAY_SECRET':secret,
-           'XDG_DATA_HOME':str(path/'data'), 'XDG_CONFIG_HOME':str(path/'config')}
-    process = subprocess.Popen([os.environ.get('CADDY_BIN', 'caddy'),'run','--config',str(path/'Caddyfile'),'--adapter','caddyfile'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    url = 'http://127.0.0.1:'+str(port)+'/api/status'
-    try:
-        for _ in range(50):
+def main():
+    with tempfile.TemporaryDirectory() as directory:
+        app = create_app(directory, hosted=HostedSettings(ORIGIN, SECRET))
+        forwarded = []
+
+        @app.before_request
+        def inspect_proxy_headers():
+            forwarded.append((request.headers.get('X-Client-IP'), request.headers.get('X-Team-User'),
+                              request.headers.get('Authorization')))
+
+        backend = create_server(app, host='127.0.0.1', port=0, threads=4)
+        worker = threading.Thread(target=backend.run, daemon=True)
+        worker.start()
+
+        class Proxy(BaseHTTPRequestHandler):
+            # A test fixture for the contract, not a production proxy/TLS server.
+            def log_message(self, *args):
+                pass
+
+            def forward(self):
+                if self.headers.get('Host') != AUTHORITY:
+                    self.send_error(403)
+                    return
+                headers = {name: value for name, value in self.headers.items()
+                           if name.lower() not in {'host', 'authorization', 'x-team-user',
+                               'x-team-gateway', 'x-client-ip', 'x-forwarded-for', 'forwarded',
+                               'connection', 'transfer-encoding'}}
+                headers.update({'Host': AUTHORITY, 'X-Team-Gateway': SECRET,
+                                'X-Client-IP': self.client_address[0]})
+                body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                connection = http.client.HTTPConnection('127.0.0.1', backend.effective_port, timeout=5)
+                try:
+                    connection.request(self.command, self.path, body=body, headers=headers)
+                    response = connection.getresponse()
+                    data = response.read()
+                    self.send_response(response.status)
+                    for name, value in response.getheaders():
+                        if name.lower() not in {'connection', 'transfer-encoding', 'content-length'}:
+                            self.send_header(name, value)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                finally:
+                    connection.close()
+
+            do_GET = do_POST = forward
+
+        proxy = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
+        proxy_worker = threading.Thread(target=proxy.serve_forever, daemon=True)
+        proxy_worker.start()
+
+        def call(path, *, direct=False, headers=None, body=None):
+            connection = http.client.HTTPConnection(
+                '127.0.0.1', backend.effective_port if direct else proxy.server_port, timeout=5)
             try:
-                with socket.create_connection(('127.0.0.1',port),timeout=.2):
-                    break
-            except OSError:
-                time.sleep(.1)
-        else:
-            raise AssertionError('Caddy did not start')
-        headers={'Host':'team.example.com:'+str(port)}
-        # The page and status must be reachable without any extra site password.
-        with opener.open(urllib.request.Request(url.removesuffix('api/status'), headers=headers)) as response:
-            assert response.status == 200
-        headers.update({'X-Team-User': 'forged-admin', 'X-Team-Gateway': 'forged-secret',
-                        'X-Client-IP': '198.51.100.1', 'X-Forwarded-For': '198.51.100.1',
-                        'Authorization': 'Basic synthetic-forged-value'})
-        with opener.open(urllib.request.Request(url,headers=headers)) as response:
-            assert response.status == 200
-            state = json.load(response)
-            assert state['hosted'] is True and state['account'] is None
-        assert len(forwarded) == 2 and all(item == ('127.0.0.1', None, None) for item in forwarded), forwarded
+                connection.request('POST' if body is not None else 'GET', path,
+                                   body=json.dumps(body) if body is not None else None,
+                                   headers={'Host': AUTHORITY, **(headers or {})})
+                response = connection.getresponse()
+                return response.status, response.getheaders(), response.read()
+            finally:
+                connection.close()
+
         try:
-            opener.open(urllib.request.Request('http://127.0.0.1:'+str(backend.effective_port)+'/api/status',
-                                               headers={'Host': 'team.example.com'}))
-        except urllib.error.HTTPError as error:
-            assert error.code == 403
-        else:
-            raise AssertionError('Direct backend request bypassed trusted proxy requirement')
-        print('Caddy gateway PASS: public page/status=200, forged headers overwritten/removed, '
-              'direct backend=403; school requests=0')
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
-        backend.task_dispatcher.shutdown()
-        backend.close()
-        app.extensions['workspaces'].close()
+            assert call('/')[0] == 200  # No separate site-account authentication.
+            status, headers, data = call('/api/status', headers={
+                'X-Team-User': 'forged-admin', 'X-Team-Gateway': 'forged-secret',
+                'X-Client-IP': '198.51.100.1', 'X-Forwarded-For': '198.51.100.1',
+                'Authorization': 'Basic synthetic-forged-value'})
+            state = json.loads(data)
+            assert status == 200 and state['hosted'] is True and state['account'] is None
+            assert forwarded == [('127.0.0.1', None, None)] * 2, forwarded
+            cookies = SimpleCookie()
+            for name, value in headers:
+                if name.lower() == 'set-cookie':
+                    cookies.load(value)
+            assert cookies and all(c['secure'] and c['httponly'] and c['samesite'] == 'Strict'
+                                   for c in cookies.values())
+            response_headers = dict(headers)
+            csp = response_headers['Content-Security-Policy']
+            assert "script-src 'self';" in csp and 'unsafe-eval' not in csp
+            assert response_headers['Cache-Control'] == 'no-store'
+            write_headers = {'Cookie': '; '.join(c.OutputString().split(';')[0] for c in cookies.values()),
+                             'Content-Type': 'application/json', 'Origin': ORIGIN,
+                             'X-CSRF-Token': state['csrf']}
+            # The full external authority, including the HTTPS port, must survive forwarding.
+            assert call('/api/location', headers=write_headers, body=POINT)[0] == 200
+            for changes in ({'Origin': 'https://team.example.com'}, {'X-CSRF-Token': ''}):
+                assert call('/api/location', headers={**write_headers, **changes}, body=POINT)[0] == 403
+            assert call('/api/status', headers={'Host': 'team.example.com'})[0] == 403
+            assert call('/api/status', direct=True)[0] == 403
+            assert call('/healthz', direct=True)[0] == 200
+            for host in ('team.example.com', 'other.example.com:60000'):
+                assert call('/api/status', direct=True, headers={
+                    'Host': host, 'X-Team-Gateway': SECRET, 'X-Client-IP': '127.0.0.1'})[0] == 403
+            print('Proxy contract PASS: nonstandard HTTPS origin/Host, page/status=200, '
+                  'forged headers overwritten/removed, secure cookies/CSP, Origin/CSRF, '
+                  'direct backend=403, health=200; school requests=0')
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            proxy_worker.join(timeout=3)
+            backend.task_dispatcher.shutdown(timeout=5)
+            backend.close()
+            worker.join(timeout=3)
+            app.extensions['workspaces'].close()
+
+
+if __name__ == '__main__':
+    main()

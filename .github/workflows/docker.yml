@@ -19,12 +19,23 @@ jobs:
         run: |
           cp .env.example .env
           echo 'GATEWAY_SECRET=synthetic-ci-gateway-secret-0000000000000000' >> .env
+          echo 'TIANDITU_KEY=synthetic-ci-tianditu-key' >> .env
           docker compose config --quiet
-          docker compose build backend
-          docker compose run --rm --no-deps gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          test "$(docker compose config --services)" = backend
+          docker compose build
+          PROXY_NETWORK=synthetic-proxy docker compose -f compose.yaml -f deploy/compose.proxy-network.yaml config --quiet
+      - name: Build a private archive context under umask 077
+        run: |
+          context="$RUNNER_TEMP/private-build-context"
+          mkdir -m 700 "$context"
+          git archive HEAD | tar -x -C "$context"
+          find "$context" -type d -exec chmod 0700 {} +
+          find "$context" -type f -exec chmod 0600 {} +
+          docker build --tag goodnightuestc-web:private-context "$context"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges goodnightuestc-web:private-context python -c "import app, server, moonuestc.client; from pathlib import Path; assert Path('/app/static/index.html').read_bytes(); assert not Path('/app/tests').exists(); assert not Path('/app/.env').exists()"
       - name: Start backend and check isolated runtime
         run: |
-          docker compose up -d backend
+          docker compose up -d
           python - <<'PY'
           import subprocess
           import time
@@ -62,14 +73,14 @@ jobs:
           PY
       - name: Check Web browser flows with synthetic school data
         run: |
-          docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/hosted_ui_smoke.py
-          docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/session_ui_smoke.py
-      - name: Check public gateway without site-account authentication
-        run: |
-          docker create --name caddy-test caddy:2.10.2-alpine
-          docker cp caddy-test:/usr/bin/caddy /tmp/caddy
-          docker rm caddy-test
-          CADDY_BIN=/tmp/caddy python tests/gateway_smoke.py
+          fixtures="$RUNNER_TEMP/readable-tests"
+          cp -R tests "$fixtures"
+          find "$fixtures" -type d -exec chmod 0755 {} +
+          find "$fixtures" -type f -exec chmod 0644 {} +
+          docker compose run --rm --no-deps --volume "$fixtures:/app/tests:ro" backend python tests/hosted_ui_smoke.py
+          docker compose run --rm --no-deps --volume "$fixtures:/app/tests:ro" backend python tests/session_ui_smoke.py
+      - name: Check reverse-proxy contract on loopback
+        run: python tests/gateway_smoke.py
       - name: Clean up
         if: always()
         run: docker compose down -v

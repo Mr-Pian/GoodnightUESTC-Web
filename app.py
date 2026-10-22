@@ -112,7 +112,7 @@ def create_app(data_dir=None, *, hosted):
     def headers(response):
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; "
+            f"img-src 'self' data: {hosted.map_image_sources()}; connect-src 'self'; "
             "frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'")
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
@@ -166,6 +166,10 @@ def create_app(data_dir=None, *, hosted):
     @app.get('/healthz')
     def health():
         return jsonify(status='ok')
+
+    @app.get('/api/map-config')
+    def map_config():
+        return jsonify(hosted.map_config())
 
     @app.get('/api/status')
     def status():

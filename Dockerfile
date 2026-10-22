@@ -1,4 +1,5 @@
-FROM python:3.12-slim-bookworm
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+FROM ${PYTHON_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -22,7 +23,13 @@ COPY vendor/ ./vendor/
 COPY static/ ./static/
 COPY LICENSE ./LICENSE
 
+# Only public application files are copied into /app. Normalize their permissions
+# even when the build context was unpacked under umask 077; do not touch /data.
+RUN find /app -type d -exec chmod 0755 {} + \
+    && find /app -type f -exec chmod 0644 {} +
+
 USER 10001:10001
+RUN python -c "import app, server, moonuestc.client; from pathlib import Path; [p.read_bytes() for p in Path('/app/static').rglob('*') if p.is_file()]"
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2).close()"

@@ -1,0 +1,10 @@
+# Optional override for an existing containerized reverse proxy.
+# Requires Docker Compose >= 2.24.4 for !reset. Create the network yourself and
+# attach your proxy to it. This file never creates or configures a proxy.
+services:
+  backend:
+    ports: !reset []
+networks:
+  app:
+    external: true
+    name: ${PROXY_NETWORK:?Set the name of your existing proxy network}

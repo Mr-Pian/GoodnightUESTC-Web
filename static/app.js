@@ -98,7 +98,86 @@ $('submit-checkin').addEventListener('click',async()=>{
 $('checkin-dialog').addEventListener('cancel',e=>{if(submitting)e.preventDefault();else confirmation='';});
 const campuses={shahe:[30.6752,104.0975],qingshuihe:[30.7528,103.9313]};
 function viewCampus(key){map.setView(campuses[key],16);for(const name of Object.keys(campuses))$('campus-'+name).setAttribute('aria-pressed',String(name===key));}
-try{map=L.map('map',{scrollWheelZoom:true}).setView(campuses.shahe,16);const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'}).addTo(map);let tileErrors=0;tiles.on('tileerror',()=>{if(++tileErrors>2)$('map-tip').textContent='底图暂时不可用，可手动输入坐标';});map.on('click',e=>{$('coordinate-system').value='wgs84';$('latitude').value=e.latlng.lat.toFixed(7);$('longitude').value=e.latlng.lng.toFixed(7);showPoint(e.latlng.lat,e.latlng.lng);$('converted').textContent='已选地图位置，请保存。';});for(const key of Object.keys(campuses))$('campus-'+key).addEventListener('click',()=>viewCampus(key));}catch(e){$('map-tip').textContent='地图未加载，可手动输入经纬度。';}
+let mapProviders = [], mapLayers = [], mapGeneration = 0;
+function setBasemap(id) {
+  const provider = mapProviders.find(item => item.id === id);
+  if (!map || !provider) return;
+  const generation = ++mapGeneration;
+  for (const layer of mapLayers) layer.remove();
+  mapLayers = [];
+  const failedTiles = new Set();
+  function tileStatus() {
+    if (generation !== mapGeneration) return;
+    $('map-status').hidden = !failedTiles.size;
+    $('retry-map').hidden = !failedTiles.size;
+    $('map-status').textContent = failedTiles.size
+      ? `${provider.name}底图部分内容加载失败，可重试、切换底图或手动输入坐标。` : '';
+  }
+  tileStatus();
+  $('map-provider').value = provider.id;
+  $('map-source').textContent = `底图：${provider.name} · ${provider.reference}`;
+  map.setMaxZoom(provider.maxZoom);
+  for (const spec of provider.layers) {
+    const layer = L.tileLayer(spec.url, {
+      minZoom: 1, maxZoom: provider.maxZoom, subdomains: spec.subdomains || 'abc',
+      attribution: spec.attribution, updateWhenIdle: true, keepBuffer: 1,
+      referrerPolicy: 'strict-origin-when-cross-origin'
+    });
+    layer.on('tileerror', event => { failedTiles.add(event.tile); tileStatus(); });
+    for (const name of ['tileload', 'tileunload']) {
+      layer.on(name, event => { failedTiles.delete(event.tile); tileStatus(); });
+    }
+    mapLayers.push(layer);
+    layer.addTo(map);
+  }
+}
+async function loadMapConfig() {
+  $('retry-map').disabled = true;
+  try {
+    const config = await api('/api/map-config');
+    mapProviders = config.providers;
+    $('map-provider').replaceChildren();
+    for (const provider of mapProviders) {
+      const option = document.createElement('option');
+      option.value = provider.id;
+      option.textContent = provider.name;
+      $('map-provider').append(option);
+    }
+    $('map-provider').disabled = mapProviders.length < 2;
+    setBasemap(config.default);
+  } catch (error) {
+    $('map-source').textContent = '底图暂不可用';
+    $('map-status').textContent = '底图配置加载失败，可重试或手动输入坐标。';
+    $('map-status').hidden = false;
+    $('retry-map').hidden = false;
+  } finally {
+    $('retry-map').disabled = false;
+  }
+}
+try {
+  map = L.map('map', {scrollWheelZoom: true, minZoom: 1}).setView(campuses.shahe, 16);
+  map.on('click', event => {
+    // Both supported basemaps use geographic coordinates, without a GCJ-02 shift.
+    // Tianditu's CGCS2000 is treated as WGS-84 approximately at this map scale.
+    $('coordinate-system').value = 'wgs84';
+    $('latitude').value = event.latlng.lat.toFixed(7);
+    $('longitude').value = event.latlng.lng.toFixed(7);
+    showPoint(event.latlng.lat, event.latlng.lng);
+    $('converted').textContent = '已选地图位置，请保存。';
+  });
+  for (const key of Object.keys(campuses)) {
+    $('campus-' + key).addEventListener('click', () => viewCampus(key));
+  }
+  $('map-provider').addEventListener('change', () => setBasemap($('map-provider').value));
+  $('retry-map').addEventListener('click', () => {
+    if (mapProviders.length) setBasemap($('map-provider').value);
+    else loadMapConfig();
+  });
+  loadMapConfig();
+} catch (error) {
+  $('map-tip').textContent = '地图未加载，可手动输入经纬度。';
+  $('map-source').textContent = '底图暂不可用';
+}
 let refreshTimer;
 function scheduleRefresh(){clearTimeout(refreshTimer);if(document.hidden)return;const busy=loginBusy||submitting||testing||operationBusy;refreshTimer=setTimeout(()=>refresh().catch(()=>{}),busy?2000:30000);}
 document.addEventListener('visibilitychange',()=>{clearTimeout(refreshTimer);if(!document.hidden)refresh().catch(()=>{});});

@@ -4,9 +4,9 @@
 
 ## 架构与保存范围
 
-公网请求经过 Caddy 或 Nginx 的 HTTPS 后进入后端，页面不要求额外的网站账号或 HTTP Basic Auth。用户直接完成学校统一认证；学校相关操作要求有效学校会话，本站不另设测试组白名单，任何具备相应学校账号与业务权限的人均可使用。后端校验内部代理密钥、公开 Host、Origin 和 CSRF，并按浏览器及来源 IP 限速。用户只需浏览器，无需在本机运行 Python。`hosted.py` 管理隔离的工作台与资源，`session_packages.py` 负责加密会话包、设备绑定与恢复许可。
+浏览器请求经过部署者管理的 HTTPS 反向代理后进入后端，页面不要求额外的网站账号或 HTTP Basic Auth。用户直接完成学校统一认证；学校相关操作要求有效学校会话，本站不另设测试组白名单，任何具备相应学校账号与业务权限的人均可使用。后端校验内部代理密钥、公开 Host、Origin 和 CSRF，并按浏览器及来源 IP 限速。用户只需浏览器，无需在本机运行 Python。`hosted.py` 管理隔离的工作台与资源，`session_packages.py` 负责加密会话包、设备绑定与恢复许可。
 
-`GATEWAY_SECRET` 是反向代理与后端之间的内部共享密钥，由运维配置，用户无需输入；它不承担成员登录功能。代理覆盖 `X-Team-Gateway`、`X-Client-IP` 并删除旧 `X-Team-User` 和 Authorization 头。后端仅在密钥校验通过后信任代理提供的来源 IP，不使用客户端自报的身份或 `X-Forwarded-For`。默认部署要求代理直接接收公网连接。
+`GATEWAY_SECRET` 是反向代理与后端之间的内部共享密钥，由运维配置，用户无需输入；它不承担成员登录功能。代理覆盖 `X-Team-Gateway`、`X-Client-IP` 并删除旧 `X-Team-User` 和 Authorization 头。后端仅在密钥校验通过后信任代理提供的来源 IP，不使用客户端自报的身份或 `X-Forwarded-For`。代理前若有 CDN 或其他入口，需由部署者限定可信来源后确定客户端 IP。
 
 1. 学号、密码、验证码通过 HTTPS 发到后端，在独立 Chromium context 中完成学校登录；密码仅供本次登录，不保存用于自动重登。
 2. 登录成功后关闭 Chromium，取得学校 Cookie、学号、User-Agent 和保存时间的快照。默认开启“在此浏览器记住学校登录”，可随时关闭；共用设备请关闭。
@@ -28,7 +28,7 @@
 
 恢复许可用于撤销已复制的旧包，默认全站最多 1024 个、同一浏览器设备只保留一个有效许可；同一设备的新登录替换旧许可，过期行在签发新包时回收。卷内 SQLite 可能产生事务临时文件，应整体保护。加密密钥和数据库必须一起保留、一起备份；丢失密钥不能解密，丢失许可数据库会使原包无法恢复。检测到“许可数据库存在但密钥丢失”时服务拒绝启动，不会静默生成新密钥。
 
-Caddy 的 `caddy_data` / `caddy_config` 用于证书和入口配置。Chromium 临时 profile、缓存和临时缓冲文件位于 `/tmp` tmpfs。后端使用非 root、只读根目录、默认 Docker seccomp、去除 capabilities 和禁止提权。Playwright 默认关闭 Chromium 自身 sandbox，隔离依赖容器限制与学校域名白名单；不要挂载 Docker socket。
+Chromium 临时 profile、缓存和临时缓冲文件位于 `/tmp` tmpfs。后端使用非 root、只读根目录、默认 Docker seccomp、去除 capabilities 和禁止提权。Playwright 默认关闭 Chromium 自身 sandbox，隔离依赖容器限制与学校域名白名单；不要挂载 Docker socket。
 
 <a id="sessions"></a>
 
@@ -79,250 +79,276 @@ Caddy 的 `caddy_data` / `caddy_config` 用于证书和入口配置。Chromium �
 
 持久卷中的恢复元数据容量有显式上限，学校凭据不集中落盘；密钥是唯一需要长期保留的会话加密秘密。若系统启用 swap 或崩溃转储，运行时明文仍可能被操作系统写盘，不能据此承诺主机级“绝不落盘”。目前保持单进程、单副本，浏览器持久化没有取消原有的限速、工作台锁或防重复提交约束。
 
-## 首次部署
+## 后端安装与启动
 
-准备一台可访问学校官方服务的 Linux 服务器，安装 Docker Engine 与 **Compose v2**。建议至少 2 核、2 GB 内存；默认最多并行两个登录浏览器，需按实际使用情况调整内存和并发。将专用域名的 DNS 指向服务器，开放 TCP 80/443；443/UDP 用于 HTTP/3，可按需要关闭。若设置 AAAA，IPv6 也必须可达。后端不开放 8090。
+仓库只交付应用容器：Web 静态资源、Waitress 和学校登录所需 Chromium。域名、公网端口、反向代理及 HTTPS 证书由部署者管理；Compose 不启动代理，不申请证书，不修改宿主机配置。建议 Linux 服务器至少 2 核、2 GB 内存，能访问学校官方服务。使用 Docker Engine 和 Compose v2；下文 `up --wait` 需要 Compose 2.20 或更新版本，可选的共享网络覆盖文件需要 **2.24.4 或更新版本**。推荐交互安装器另需宿主机 Python 3.8+，只使用标准库，不需要 pip 安装应用依赖。
+
+### 推荐：交互安装
 
 ```sh
-git clone https://github.com/Mr-Pian/GoodnightUESTC-Web.git
+git clone --branch web https://github.com/Mr-Pian/GoodnightUESTC-Web.git
 cd GoodnightUESTC-Web
-cp .env.example .env
-chmod 600 .env
+python3 deploy/install.py
 ```
 
-编辑 `.env`，设置域名、证书通知邮箱、随机网关密钥及本次镜像标签。生成密钥：
+安装器在服务器终端依次询问 `PUBLIC_ORIGIN` 和运维自己申请的**天地图地图服务 Key**。Key 输入不回显，首次安装不能为空，详见[地图配置与排障](#maps)。安装器设置 `MAP_PROVIDER=tianditu`，生成缺失的 `GATEWAY_SECRET`，以原子替换方式保存权限 `0600` 的 `.env`，再运行 Compose 配置校验、`up -d --build --wait backend` 和状态查看。内部代理密钥与地图 Key 不打印到终端，也不作为命令行参数或构建参数传递。运维从本机 `.env` 将 `GATEWAY_SECRET` 配置到自己的反向代理。
+
+再次运行时，地址和 Key 可直接回车保留；不会轮换已有内部密钥，不删除数据卷，并保留自定义端口、镜像标签、会话限制及项目名等其他配置。新安装器会将默认底图调整为天地图；切换 Key 时再次输入新值即可。输入未完成或取消时不写文件；Docker 后续失败时保留已保存的配置，修复后重试。已有部署更新前仍需等待正在执行的学校操作完成，按[更新、回滚和会话维护](#更新回滚和会话维护)保留原项目名和卷。
+
+只准备配置、暂不构建启动：
 
 ```sh
+python3 deploy/install.py --configure-only
+```
+
+已有容器代理网络时，安装器可使用共享网络覆盖文件：
+
+```sh
+python3 deploy/install.py --proxy-network my-proxy-network
+```
+
+网络需由运维事先建立并接入代理，安装器会将名称写入 `.env`，不创建网络。此命令要求 Compose >= 2.24.4，并移除宿主机端口映射，详见下文。再次使用安装器管理同一共享网络部署时继续带 `--proxy-network`；手动 Compose 管理继续带相同的两个 `-f` 参数。
+
+安装器固定使用仓库根目录的 `.env`，启动子进程时不接受 shell 中同名 `PUBLIC_ORIGIN`、`GATEWAY_SECRET`、`MAP_PROVIDER`、`TIANDITU_KEY`、`PROXY_NETWORK` 覆盖刚保存的值，构建出口代理变量照常保留。它不加载或执行 `.env` 的 shell 代码，受管理的配置项支持单行字面值；复杂插值、转义或符号链接配置请使用下文手动方式。不要通过管道把 Key 传给安装器；无交互 CI / 自动化使用 `.env` 或平台的运行时配置直接启动 Compose。直接运行 `docker compose` 本身不会弹出输入提示。
+
+### 手动配置与自动化
+
+拉取代码后，准备自己的环境文件，或由部署平台注入相同配置：
+
+```sh
+cp .env.example .env
+chmod 600 .env
 python3 -c 'import secrets; print(secrets.token_hex(32))'
 ```
 
-将输出填入 `GATEWAY_SECRET`，不要复用学校密码。`BACKEND_IMAGE` 建议使用提交号或发布版本，例如 `goodnightuestc-web:release-1`。`.env` 已在 `.gitignore` 中；Docker 构建上下文采用白名单，不包含环境配置、测试文件、离线模拟数据库或截图。无需创建成员文件或网站密码。
+编辑 `.env`：
+
+- `PUBLIC_ORIGIN`：浏览器实际访问的完整 HTTPS origin，例如 `https://checkin.example.com:60000`。使用小写域名，不含路径、尾部斜线、查询或凭据；当前应用部署在站点根路径，不支持子路径挂载。
+- `GATEWAY_SECRET`：填入生成的随机值，与现有代理配置中的内部密钥一致。不要复用学校密码；无需创建成员文件或网站账号。
+- `BACKEND_PORT`：宿主机代理连接的本地端口，默认 `18090`，仅绑定 `127.0.0.1`。
+- `BACKEND_IMAGE`：本地构建镜像的唯一标签，例如 `goodnightuestc-web:你的提交号`，保留旧标签供回滚。仓库目前提供源码构建，尚未发布可供拉取的官方预构建镜像。
+- `MAP_PROVIDER` / `TIANDITU_KEY`：模板默认 `tianditu`，必须填自己的天地图地图服务 Key，配置方法见[地图配置与排障](#maps)。需要 OSM 的手动部署可显式改为 `osm`；未设置 provider 的旧配置仍兼容 `auto`。
 
 ```sh
 docker compose config --quiet
-docker compose build backend
-docker compose run --rm --no-deps gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker compose up -d
+docker compose build
+docker compose up -d --wait
 docker compose ps
+curl --fail http://127.0.0.1:18090/healthz
 ```
 
-Caddy 自动申请证书并将 HTTP 跳转到 HTTPS。网关等待后端健康检查通过后启动。使用浏览器访问 `https://你的域名/`，直接登录学校账号。登录过程中弹出的画面属于本人独立的服务器浏览器；可点击图片里的字段后使用“发送输入”，或拖动验证控件。学校认证后浏览器会关闭，学校会话转入当前工作台内存。之后沿用保存实际位置、只读检查、预检查、本人最终确认和学校记录回读的单次流程。
+默认只启动 `backend`，不绑定公网 80/443，不要求证书配置。容器内监听 TCP 8090；Dockerfile 的 `EXPOSE` 仅声明端口，本身不会发布端口。`/healthz` 返回 200 仅代表应用可响应；此时直接访问回环端口的页面或 `/api/status` 返回 **403 是预期行为**，需按下节接入可信代理后使用。浏览器学校登录仍通过该代理的 HTTPS 入口进行。
 
-<a id="nginx"></a>
+### 现有容器代理：使用共享网络
 
-## 使用宿主机 Nginx（可选）
-
-已有宿主机 Nginx 管理多个站点时，可以由它负责 HTTPS 和反向代理，只运行本项目的后端容器。默认 Caddy 方案无需 Nginx；本节是替代部署方式。以下示例假设 Nginx 直接接收公网请求，域名为 `checkin.example.com`，服务部署在独立子域名的 `/` 路径。
-
-| 端口 | Caddy 默认方案 | 宿主机 Nginx 方案 |
-| --- | --- | --- |
-| TCP 80 | 公网开放给 Caddy，用于 HTTPS 跳转和证书验证 | 公网开放给 Nginx，用于 HTTPS 跳转和证书验证 |
-| TCP 443 | 公网开放给 Caddy | 公网开放给 Nginx |
-| UDP 443 | 可选，用于 Caddy 的 HTTP/3 | 本节配置不使用，无需开放 |
-| TCP 18090 | 不使用 | 只绑定宿主机 `127.0.0.1`，供 Nginx 访问后端，不开放公网 |
-| 容器 TCP 8090 | 仅 Docker 网络访问 | 通过回环端口映射供宿主机 Nginx 访问，不开放公网 |
-
-沿用首次部署中的 `.env` 初始化，将 `SITE_DOMAIN` 设置为实际域名，生成 `GATEWAY_SECRET`；保留 `.env` 的其余示例配置项，因为原 Compose 文件仍会整体解析。无需创建 Caddy 成员文件或 Nginx htpasswd 文件。
-
-在仓库根目录创建 `compose.nginx.yaml`：
-
-```yaml
-services:
-  backend:
-    ports:
-      - "127.0.0.1:18090:8090"
-```
-
-明确只启动后端，防止 Caddy 占用 Nginx 的 80/443：
+如果反向代理也在 Docker 中运行，由部署者创建或选择受控的共享网络，将自己的代理接入，再使用仓库提供的覆盖文件。不要让不受信任的容器加入该网络。
 
 ```sh
-# 仅在之前启动过本项目的 Caddy 时执行。
-docker compose stop gateway
-
-docker compose -f compose.yaml -f compose.nginx.yaml config --quiet
-docker compose -f compose.yaml -f compose.nginx.yaml up -d --build backend
-docker compose -f compose.yaml -f compose.nginx.yaml ps
+# 换成自己的网络名称；不存在时由部署者创建。
+export PROXY_NETWORK=my-proxy-network
+docker compose -f compose.yaml -f deploy/compose.proxy-network.yaml config --quiet
+docker compose -f compose.yaml -f deploy/compose.proxy-network.yaml up -d --build --wait
 ```
 
-后续更新与回滚也使用同样的两个 `-f` 参数，并明确指定 `backend`；不要执行未指定服务的 `up -d`，否则仍可能启动原来的 Caddy。保留 `127.0.0.1` 绑定，写成 `18090:8090` 通常会发布到所有宿主机网卡。Dockerfile 的 `EXPOSE 8090` 仅是容器端口声明，本身不会发布公网端口。
+此方式需要 Compose >= 2.24.4；覆盖文件用 `!reset []` 移除宿主机端口映射，并将 `app` 网络指向已有网络。代理目标为 `http://backend:8090`，容器中的 `127.0.0.1` 指向容器自身。同一共享网络运行多个同名服务时，部署者应为后端安排唯一网络别名并相应调整代理目标。后续管理、更新、备份等命令均使用同样的两个 `-f` 参数及同一 `PROXY_NETWORK`。
 
-下面的 Nginx 配置放在 `http {}` 引入的站点文件中。将域名、证书路径和网关密钥替换成实际值；`X-Team-Gateway` 的值必须与后端 `.env` 中的 `GATEWAY_SECRET` 完全一致，Nginx 不会自动读取项目 `.env`。配置文件含网关密钥，应限制读取权限并且不要提交到 Git。
+<a id="proxy-contract"></a>
 
-```nginx
-# 本示例直接面向公网，按连接来源 IP 限速。
-# 多名成员共用校园出口时，按实际人数调高 rate/burst。
-limit_req_zone $binary_remote_addr zone=uestc_ip:10m rate=10r/s;
+## 反向代理接入约定
 
-server {
-    listen 80;
-    server_name checkin.example.com;
+可使用已有 Nginx、Caddy、Traefik 或其他代理。本项目只规定应用需要的转发行为，不安装代理或管理证书。公网 HTTPS 的证书、可信链和可达端口由部署者验证。
 
-    location /.well-known/acme-challenge/ {
-        root /var/www/acme;
-    }
+| 项目 | 要求 |
+| --- | --- |
+| 站点与 `Host` | 代理只接受配置的站点，将完整外部 authority 传给后端；必须匹配 `PUBLIC_ORIGIN`，包括非标准 HTTPS 端口。例如 `checkin.example.com:60000`。Nginx 的 `$host` 通常不包含端口；可在限定站点中设置固定 authority，或先验证再使用包含端口的 Host，不能无条件信任任意客户端 Host |
+| `X-Team-Gateway` | 代理覆盖为私有 `GATEWAY_SECRET`，不接受客户端自报值；代理不会自动读取本项目 `.env`，需部署者配对配置 |
+| `X-Client-IP` | 覆盖为可信客户端 IP。前置 CDN 或其他代理时，先限定可信来源，再解析实际 IP；不直接透传用户自报头 |
+| `Authorization` / `X-Team-User` | 清除客户端提供的值，不将其用作本站成员认证。学校认证在应用内部完成 |
+| 浏览器请求 | 保留 Cookie、`Origin`、`X-CSRF-Token`、响应 `Set-Cookie` 和安全响应头。维持 Host / Origin / CSRF、Secure Cookie 和 CSP 校验，不添加 `unsafe-eval` |
+| 超时 | 建议连接 5 秒、发送 15 秒、读取至少 130 秒；前端签到等待最多 120 秒。超时或断开不代表学校未收到请求，不能自动重发 |
+| 重试 | 禁止代理对写请求自动重试或故障转移重发；应用的真实签到 POST 也只发送一次 |
+| 缓存、缓冲 | 不缓存私有页面和 API；禁用响应、请求缓冲可避免敏感正文落到代理临时文件。请求体允许 96 KiB，不能意外截断会话包恢复请求 |
+| 日志 | 不记录密码、Cookie、token、内部密钥、请求正文和登录画面；代理调试日志也应按此处理 |
+| 连接协议 | 远程登录使用 HTTP 轮询，不要求 WebSocket。HTTPS 在代理终止，可信内部网络上用 HTTP 访问应用 |
+| 限速 | 后端已有浏览器及来源 IP 限速；代理可另设适合实际人数的限制，校园共用出口需考虑 NAT |
 
-    location / {
-        return 308 https://checkin.example.com$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    server_name checkin.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/checkin.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/checkin.example.com/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    add_header Strict-Transport-Security "max-age=31536000" always;
-
-    client_max_body_size 96k;
-    client_body_buffer_size 96k;
-    client_body_timeout 15s;
-
-    access_log off;
-    error_log /var/log/nginx/uestc-error.log warn;
-
-    location / {
-        limit_req zone=uestc_ip burst=30 nodelay;
-        limit_req_status 429;
-
-        proxy_pass http://127.0.0.1:18090;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-For $remote_addr;
-
-        # 覆盖来源头并移除旧入口身份；不信任客户端自报的身份或 IP。
-        proxy_set_header X-Client-IP $remote_addr;
-        proxy_set_header X-Team-User "";
-        proxy_set_header X-Team-Gateway "REPLACE_WITH_GATEWAY_SECRET";
-        proxy_set_header Authorization "";
-
-        proxy_connect_timeout 5s;
-        proxy_send_timeout 15s;
-        proxy_read_timeout 130s;
-        proxy_cache off;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_next_upstream off;
-    }
-}
-```
-
-学校登录画面通过 HTTP 轮询获取，无需 WebSocket Upgrade。上述配置覆盖客户端的代理来源头、禁止代理自动重试，并关闭代理缓存和缓冲。不要另行开启请求正文、Authorization、Cookie 或 debug 日志。如果 Nginx 前面还有 CDN/代理，应只信任明确列出的代理来源后再配置 real_ip 模块，将校验后的 `$remote_addr` 传给后端；Caddy 前置代理时也须按明确的可信代理范围调整来源获取，不能直接转发客户端提供的 `X-Forwarded-For` 或 `X-Client-IP`。
-
-安装 Nginx 及证书管理工具即可，无需安装 htpasswd 工具或分配网站密码。
-
-完整配置要求证书文件已存在。新域名首次签发时，先只启用上面的 TCP 80 server 块并创建 `/var/www/acme`，再使用现有证书管理流程或 Certbot webroot 方式签发；证书生成后启用 443 块：
-
-```sh
-sudo mkdir -p /var/www/acme
-# 先检查并加载仅含 80 server 块的站点配置。
-sudo nginx -t
-sudo systemctl reload nginx
-sudo certbot certonly --webroot -w /var/www/acme -d checkin.example.com
-
-# 填入证书路径和网关密钥，启用完整配置后再次检查、加载。
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-为证书安排自动续期，并在成功续期后 reload Nginx。加载后验证：无需网站账号，访问 `/` 和 `/api/status` 应返回 200，尚未登录学校时 `account` 为 `null`；不带可信网关头直接访问 `http://127.0.0.1:18090/api/status` 返回 403。公网防火墙只需放行该站点的 TCP 80/443。
-
-如果 Nginx 也运行在 Docker 中，应让它加入后端所在的 Docker 网络，代理目标改为 `http://backend:8090`，后端不设置宿主机 `ports`；容器内的 `127.0.0.1` 指向该容器自身。Nginx 方式下无需为本项目的 Caddy 持久卷申请证书；后端 `attempts` 卷仍须保留。
+接入后，未经学校登录的 `/`、`/api/status` 应返回 200，状态中 `account` 为 `null`；无内部代理凭据直连 `/api/status` 应返回 403。学校查询和提交仍要求有效学校会话。不要把“容器健康”当作代理、证书和学校流程均已通过。
 
 ## 配置项
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `SITE_DOMAIN` | 必填 | 公网域名，不带协议、路径、结尾斜线；建议使用独立子域名 |
-| `ACME_EMAIL` | 必填 | HTTPS 证书通知邮箱 |
-| `GATEWAY_SECRET` | 必填 | 至少 32 个 ASCII 字符；建议生成 64 位十六进制字符串；仅供网关到后端认证 |
-| `BACKEND_IMAGE` | `goodnightuestc-web:local` | 本地构建镜像标签，应按版本区分以便回滚 |
-| `SESSION_IDLE_SECONDS` | `1800` | 距离最后一次请求的会话空闲期限；页面的状态轮询也算活动 |
+| `PUBLIC_ORIGIN` | 必填 | 完整外部 HTTPS origin，允许非标准端口，格式要求见上文 |
+| `GATEWAY_SECRET` | 必填 | 至少 32 个 ASCII 字符，推荐 64 位十六进制随机值；仅供代理到后端校验 |
+| `BACKEND_PORT` | `18090` | 宿主机回环端口，映射到容器 8090；共享网络覆盖文件不发布此端口 |
+| `BACKEND_IMAGE` | `goodnightuestc-web:local` | 本地构建的镜像标签，按版本保留以便回滚 |
+| `PYTHON_IMAGE` | `python:3.12-slim-bookworm` | 可选的构建期基础镜像引用；使用可信、兼容的 Python 3.12 / Debian Bookworm 镜像，并确认目标平台；不进入运行时环境 |
+| `MAP_PROVIDER` | 模板 / 安装器为 `tianditu`；未设置时 `auto` | 默认底图：`tianditu` 强制要求 Key；`auto` 有天地图 Key 时选天地图，否则选 OSM；`osm` 默认 OSM |
+| `TIANDITU_KEY` | 空 | 部署者申请的天地图地图服务 Key，非空时页面可选天地图；此值会发送给浏览器，不能当作服务器私密凭据 |
+| `SESSION_IDLE_SECONDS` | `1800` | 距离最后一次请求的工作台空闲期限；页面状态轮询也算活动 |
 | `SESSION_LIFETIME_SECONDS` | `28800` | 内存工作台最长 8 小时，清理后可从浏览器恢复 |
-| `SESSION_PACKAGE_TTL_SECONDS` | `604800` | 浏览器加密包的绝对期限，默认 7 天；修改只影响新签发的包 |
+| `SESSION_PACKAGE_TTL_SECONDS` | `604800` | 浏览器加密包绝对期限，默认 7 天；修改只影响新签发的包 |
 | `MAX_SAVED_DEVICES` | `1024` | 服务端最多保留的有效恢复许可数 |
 | `MAX_SESSIONS` | `64` | 单个后端最多保留的工作台数量 |
-| `MAX_SESSIONS_PER_BROWSER` | `8` | 每个随机浏览器标识的工作台数量上限，普通标签页通常共用一个 |
-| `MAX_CONCURRENT_LOGINS` | `2` | 全局并行 Chromium 登录数量，超出返回 429 |
-| `SOURCE_RATE_MULTIPLIER` | `4` | 来源 IP 预算为浏览器预算的倍数；校园出口多人共用 IP 时可按需调高，必须为正整数 |
+| `MAX_SESSIONS_PER_BROWSER` | `8` | 每个浏览器标识的工作台上限，普通标签页通常共享一个 |
+| `MAX_CONCURRENT_LOGINS` | `2` | 全局并行 Chromium 登录数，超出返回 429 |
+| `SOURCE_RATE_MULTIPLIER` | `4` | 来源 IP 预算为浏览器预算的倍数，校园 NAT 可按需调高，必须为正整数 |
+| `PROXY_NETWORK` | 仅共享网络方式必填 | 已有 Docker 网络名称，仅用于 Compose 覆盖文件 |
 
-`PUBLIC_ORIGIN` 由 Compose 从域名生成，服务启动时要求 HTTPS。`DATA_DIR` 在直接运行 `server.py` 时可设定，容器默认 `/data`。Docker 默认 `UESTC_NETWORK_MODE=direct`；如果服务器须通过测试组的出口代理访问学校，可在后端 environment 中显式添加 `HTTPS_PROXY` 并将模式改为 `system`。容器内的 `127.0.0.1` 指向容器自身。学校的 TLS 证书校验始终启用。
+容器默认 `DATA_DIR=/data`。Compose 保留非 root UID/GID 10001、只读根目录、`/tmp` tmpfs、256 MiB 共享内存、移除 capabilities、禁止提权，以及 2 GiB 内存、2 核 CPU 和 256 PID 上限。按实际登录并发测量资源需求，不要直接增加 WSGI worker 或副本：当前内存注册表、限速和互斥要求**单进程、单副本**，Waitress 使用 8 个线程。
 
-请求同时消耗浏览器预算与可信代理提供的来源 IP 预算，超限返回 429 和 `Retry-After`。限速适用于登录前后，不按学校账号计数。默认如下：
+后端限速同时消耗浏览器和来源 IP 预算：每浏览器全部请求 240 次/分钟、普通写请求 30 次/分钟、远程输入 180 次/分钟、学校登录 3 次/5 分钟、会话恢复 5 次/5 分钟。来源 IP 预算乘以 `SOURCE_RATE_MULTIPLIER`；超限返回 429 和 `Retry-After`。
 
-| 请求类别 | 每浏览器标识 | 每来源 IP（默认 4 倍） |
-| --- | --- | --- |
-| 全部应用请求 | 240 次／分钟 | 960 次／分钟 |
-| 普通写操作 | 30 次／分钟 | 120 次／分钟 |
-| 登录输入 | 180 次／分钟 | 720 次／分钟 |
-| 启动学校登录 | 3 次／5 分钟 | 12 次／5 分钟 |
-| 恢复会话包 | 5 次／5 分钟 | 20 次／5 分钟 |
+<a id="maps"></a>
 
-清 Cookie 或换浏览器不会重置同一来源 IP 的预算；换 IP 不会重置同一设备 Cookie 的预算。多人共用校园出口会共用 IP 预算，可用 `SOURCE_RATE_MULTIPLIER` 调整。IP 限速与浏览器标识不作为人员白名单，也不能阻止拥有多个来源 IP 的客户端消耗资源；全局工作台和 Chromium 并发上限仍生效。Nginx 示例还包含按连接 IP 的前置限速。
+## 地图配置与排障
 
-普通应用请求体上限 16 KiB；只有 `/api/session/restore` 放宽到 96 KiB 以承载最多 64 KiB 的包与 JSON。Nginx 和 Waitress 外层上限同步为 96 KiB。学校单次网络请求默认 8 秒超时；登录最多等待 10 分钟，取消会在当前浏览器／网络调用返回后生效。Caddy 等待后端响应头最多 130 秒。前端等待签到最多 120 秒；即使前端超时，也只能先只读核对结果，不能据此认为未提交或自动重发。
+前端使用随应用提供的 Leaflet，不加载远程地图脚本 SDK。天地图通过官方 HTTPS WMTS 加载矢量底图（`vec_w`）与中文注记（`cva_w`）两层；OpenStreetMap 保留为可选底图。天地图需要部署者在[天地图开发资源](https://lbs.tianditu.gov.cn/)申请自己的、允许网页调用地图服务的 Key，服务接口依据[官方地图服务文档](https://lbs.tianditu.gov.cn/server/MapService.html)。
 
-服务端内存注册表和限速器限定为**单进程、单副本**；Waitress 用 8 个线程处理并发。不要加多进程 WSGI worker，也不要 `--scale backend=...`。多实例部署需要重新设计共享会话、限速及提交互斥机制。
+推荐安装方式 `python3 deploy/install.py` 会在服务器终端请求填写 Key，不从镜像作者处共享 Key。手动部署时在服务器 `.env` 配置：
+
+```dotenv
+MAP_PROVIDER=tianditu
+TIANDITU_KEY=填写自己的天地图Key
+```
+
+更新到包含地图功能的代码后执行 `docker compose up -d --build backend`，然后刷新网页；共享网络部署仍使用原有的两个 `-f` 参数。Key 在运行时读取，不写入镜像，配置变更需要重新创建容器，单纯 `docker compose restart` 不会载入新的环境变量。
+
+`MAP_PROVIDER=auto` 仅根据是否配置 Key 决定初始底图，**不会在网络失败时自动回退或反复重试**。国内部署建议显式填 `tianditu`，遗漏 Key 会在启动时给出配置错误。填写 Key 后，页面提供真正的“地图底图”切换和失败后的“重试底图”；切换底图不修改标记、输入坐标或已保存位置。“输入坐标系”中的 GCJ-02（高德）只是坐标来源，并非高德底图。
+
+Key 会出现在 `/api/map-config` 响应和地图图片 URL 中，浏览器可见。使用专用地图 Key，按天地图平台规则限制允许的站点、服务权限与调用配额；不要复用学校密码、Cookie、token 或内部 `GATEWAY_SECRET`。真实 `.env` 不提交到 Git。页面保留“引自 天地图”的来源链接。
+
+地图图片由**用户浏览器直连地图服务商**，服务商会看到设备 IP、站点来源和浏览区域；这些跨域图片请求不携带本站或学校 Cookie。Docker 不增加地图代理、监听端口或数据卷，服务器无需为地图开放新的入站端口。服务器的学校访问代理和 `UESTC_NETWORK_MODE` 不影响用户浏览器加载地图。天地图每个视图请求两层图片，浏览器正常使用 HTTP 缓存；页面只保留附近少量瓦片，不批量下载或预取离线地图。
+
+后端已按配置发送 CSP：地图仅增加图片来源，`script-src` 和 `connect-src` 仍为 `'self'`。优先保留后端响应的 CSP。若现有 Nginx 或其他代理另外设置 CSP，多个策略会同时生效，更宽松的一份不能覆盖更严格的一份；其 `img-src` 也必须允许 `'self'`、`data:` 和启用的地图图片域名：
+
+```text
+https://tile.openstreetmap.org
+https://t0.tianditu.gov.cn https://t1.tianditu.gov.cn https://t2.tianditu.gov.cn https://t3.tianditu.gov.cn
+https://t4.tianditu.gov.cn https://t5.tianditu.gov.cn https://t6.tianditu.gov.cn https://t7.tianditu.gov.cn
+```
+
+不需要为此允许远程脚本或跨域 API fetch，也不需要 `unsafe-eval`、通配符域名或关闭 CSP。
+
+底图失败时，在**失败设备**的开发者工具 Network 中检查图片请求及响应：
+
+- `tile.openstreetmap.org` 的 `ERR_CONNECTION_CLOSED` 是该设备到 OSM 的连接失败；服务器能打开不代表设备能打开。检查是否已配置天地图并重建容器，或在页面切换到底图“天地图”。
+- 请求已发往 `t0`–`t7.tianditu.gov.cn`，但出现权限、配额或其他服务错误时，核对自己的 Key 是否允许地图服务及当前站点，查看平台配额和响应内容。服务返回的错误内容也可能无法作为图片显示。
+- 控制台提示 CSP 拦截时，核对响应中是否叠加了代理的 CSP；不要通过放宽脚本策略解决图片来源限制。HTTP 状态和连接错误属于其他排查方向。
+- 直接在同一设备打开 Network 中的失败图片 URL 可辅助判断连接情况，但站点来源不同可能影响 Key 校验，最终以应用页中的请求为准。URL 含地图 Key，对外分享或截图时先遮盖 `tk` 参数；无需导出包含学校凭据的 HAR。`favicon.ico` 的 404 与地图无关。
+
+OSM 使用 WGS-84，天地图使用 CGCS2000，本项目在当前选点尺度下近似按 WGS-84 处理；学校所需 GCJ-02 仍沿用原有转换。地图不可用时可以手动输入坐标，无需重新完成学校登录。
+
+## 构建下载与运行时出口
+
+基础镜像可通过构建参数覆盖；默认值不固定为某一平台的摘要。使用镜像摘要时，由部署者核对来源、平台并安排更新。
+
+```sh
+# 示例：受信任的 Python 基础镜像引用由部署者提供。
+PYTHON_IMAGE=your-trusted-registry/python:3.12-slim-bookworm docker compose --progress plain build
+
+# 代理变量从当前 shell 传入构建；不要将含凭据的代理地址写进命令历史。
+docker compose build --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY
+```
+
+Docker 的预定义构建代理参数用于 RUN 内的 pip / APT / Playwright 下载，不会自动解决 Docker daemon / BuildKit 拉取 `FROM` 镜像时的网络问题；后者使用部署者的 Docker 网络和镜像源配置。不要把代理写成 Dockerfile `ENV`、硬编码私网地址、默认使用 host 网络或关闭 HTTPS 校验。重复构建复用缓存，诊断时使用明文进度日志；日志和代理凭据均需保护。
+
+应用运行时默认 `UESTC_NETWORK_MODE=direct`，忽略系统代理。若访问学校必须经过出口代理，需在自己维护的 Compose 覆盖文件中显式添加 `HTTPS_PROXY` 并将模式改为 `system`。这是与镜像构建分开的配置，学校 TLS 校验始终启用。容器内 `127.0.0.1` 指向容器自身。
 
 ## 验证与日志
 
 ```sh
 docker compose exec -T backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2).status)"
-docker compose logs --tail=100 backend gateway
+docker compose logs --tail=100 backend
 ```
 
-`/healthz` 只报告进程可响应，不访问学校，也不创建会话；它不能证明学校网络或登录可用。外网无需网站密码即可打开页面，首次 `/api/status` 返回 `account: null`；有效学校登录前不能执行学校查询或提交。进入页面后可先运行“离线自检”。实际学校登录和提交由本人按授权测试范围操作。
+`/healthz` 不请求学校、不创建会话。接入代理后可在网页运行“离线自检”，实际学校登录和最终确认由本人操作。应用不记录密码、Cookie、token、请求正文、浏览器控制台或异常原文；容器日志最多 3 个 10 MB 文件。排错不要启用 HTTP trace、Playwright trace、HAR、录屏或打印整个环境。
 
-应用不记录密码、Cookie、token、请求正文、浏览器控制台或异常原文。Caddy 默认不启用访问日志，错误日志过滤请求头和 URI；容器日志各保留最多 3 个 10 MB 文件。排查问题不要开启请求体、HTTP trace、Playwright trace、HAR、浏览器录制或打印环境变量；这些可能包含凭据。账号资料与登录画面也不要放进问题反馈截图。
+<a id="更新回滚和会话维护"></a>
 
 ## 更新、回滚和会话维护
 
-**从带入口认证的旧版升级：** 同步更新后端、`compose.yaml`、`.env` 和代理配置。Caddy 使用新版 Caddyfile 并重新创建网关；Nginx 删除原 `auth_basic` / `auth_basic_user_file`，按上文设置 `X-Client-IP`、内部密钥并清除旧身份头，然后检查并 reload。将旧 `MAX_SESSIONS_PER_USER` 替换为 `MAX_SESSIONS_PER_BROWSER`，移除已无用途的 `MAX_SAVED_DEVICES_PER_USER`，按需增加 `SOURCE_RATE_MULTIPLIER`。旧成员文件不再挂载或读取，可自行移出部署目录；`.gitignore` 继续忽略旧文件以防意外提交。
-
-旧 `GS1` 会话包与入口账号绑定，本版改为仅绑定站点和浏览器的 `GS2` 包，**升级后需重新完成一次学校登录**。不接收客户端自报的旧入口身份进行迁移。原密钥、数据库和防重复日志全部保留；旧许可行在到期后的下次签发时清理，清理前仍计入许可总容量。回滚到旧版时，新版包也无法恢复，需要配套恢复旧代理配置及账号认证并重新登录。
-
-更新前等待正在执行的单次操作完成；重启清除所有内存工作台，但保留了浏览器包、设备 Cookie、密钥和恢复许可的成员可自动恢复学校登录。后端收到停止信号会停止接受新连接，并为已执行的请求最多等待 125 秒；Compose 停止宽限期为 140 秒。记录当前 Git 提交与 `.env` 中的镜像标签，保留旧镜像及整个 `attempts` 卷（含密钥和恢复许可）。
+更新前等待正在执行的单次操作完成，记录当前 Git 提交、镜像标签及 Compose 项目名。默认项目名 `goodnightuestc`，数据卷通常为 `goodnightuestc_attempts`；已有部署使用其他名称时继续保留，避免无意创建空卷。新卷由镜像初始化为 UID/GID 10001 可写，不递归放宽现有业务数据权限。
 
 ```sh
-git pull --ff-only origin main
-# 编辑 .env，把 BACKEND_IMAGE 改成本次新的唯一标签。
+# 当前开发分支；发行后可改为检出经过验收的固定版本标签。
+git pull --ff-only origin web
+# 编辑 .env，将 BACKEND_IMAGE 改为本次新的唯一标签。
 docker compose config --quiet
-docker compose build backend
-docker compose up -d --no-deps backend
+docker compose build
+docker compose up -d --wait
 docker compose ps
 ```
 
-若这次同时更新了 `deploy/Caddyfile`，重新创建网关加载配置：
+保留 `.env` 的 `PUBLIC_ORIGIN`、网关密钥以及完整数据卷。重启清理内存工作台；浏览器包和设备 Cookie、密钥、恢复许可仍有效时可恢复学校登录，学校也可提前使会话失效。停止时最多等待已执行请求 125 秒，Compose 宽限期 140 秒。
+
+回滚应用时，将 `BACKEND_IMAGE` 改回保留的旧镜像标签：
 
 ```sh
-docker compose up -d --force-recreate gateway
-```
-
-回滚应用时，将 `.env` 的 `BACKEND_IMAGE` 改回上一个保留的标签：
-
-```sh
-docker compose up -d --no-build --no-deps backend
+docker compose up -d --no-build --pull never --wait
 docker compose ps
 ```
 
-如果网关配置也有变化，还需恢复对应版本的代理配置。当前版本保留原有防重复日志与许可表结构；不要删除包密钥或许可表。今后若涉及数据库迁移，应先停服备份卷，再按对应版本说明回滚。
-
-本站不维护成员账号名单。使用“清除学校会话与本机保存”撤销当前设备的学校会话恢复许可；共用电脑请关闭记住登录，并在使用结束后清除会话。重启后端只清理内存，不撤销仍有效的浏览器包。
+当前打包调整未变更数据库和会话包格式。今后若版本含数据迁移，按对应发行说明决定回滚兼容性；不要在已产生新提交后随意恢复旧防重复日志。清除学校会话会撤销当前设备恢复许可，重启后端则不会撤销仍有效的浏览器包。
 
 ```sh
 docker compose stop
 docker compose start
+docker compose down
 ```
 
-`stop/start` 保留持久卷，内存学校会话会消失，符合恢复条件的浏览器可自动恢复。不要用 `docker compose down -v` 做日常更新，它会删除防重复日志、会话加密密钥、恢复许可和证书。备份时先停止后端，再完整备份 `goodnightuestc_attempts` 卷；证书卷也应按测试组运维规范保护。主机启用 swap 或崩溃转储时，内存内容仍可能被操作系统写入磁盘，内存模式不构成主机级“绝不落盘”保证。
+以上命令保留卷；**不要使用 `down -v`** 做停用或升级。长期停用时另行停用自己管理的代理入口。
 
-## 测试范围
+### 一致性备份与恢复
 
-运行 `python -m unittest discover -s tests -v` 可执行合成测试，覆盖多用户隔离、确认令牌、网关与 CSRF、到期清理、限速和单次提交防重复行为。`tests/hosted_ui_smoke.py` 使用模拟学校页面检查多用户远程登录、地图选点、模拟确认提交、离线自检和手机布局，不访问真实学校。界面测试默认使用 Playwright Chromium，安装与运行命令见主 [README](../README.md#开发与测试)。
+先等待操作完成并停止后端，再完整备份 `/data`，包括密钥、两个 SQLite 数据库及可能的事务辅助文件；不要在线复制单个数据库。下例通过一次性容器读取同一个卷，备份文件只写到本机，不打印内容：
 
-本机装有 Caddy 时，可运行 `python tests/gateway_smoke.py`（或用 `CADDY_BIN` 指定可执行文件），通过回环 HTTP 连接验证无需网站密码访问页面与状态接口、伪造来源头和内部密钥被覆盖、旧身份与 Authorization 头被删除、后端直连返回 403。它使用临时配置和数据，不申请公网证书。唯一 CI `.github/workflows/docker.yml` 负责该代理测试、合成单元测试、Linux 镜像构建、非 root 只读容器启动、健康检查、容器内 Chromium 截图和两个托管界面测试；测试文件仅以只读挂载加入，所有步骤均不请求学校服务。
+```sh
+mkdir -p backups
+chmod 700 backups
+backup_file="backups/data-$(date +%Y%m%d-%H%M%S).tar.gz"
+docker compose stop backend
+(umask 077; docker compose run --rm --no-deps -T backend python -c "import sys, tarfile; archive = tarfile.open(fileobj=sys.stdout.buffer, mode='w|gz'); archive.add('/data', arcname='data'); archive.close()" > "$backup_file")
+# 确认备份命令成功、备份可读后再启动。
+docker compose start backend
+```
 
-离线模拟器保留在源码中，Docker 镜像不包含或启动它。此部署没有新增定时提交任务。合成测试和模拟页面通过不代表真实学校 API 提交成功；容器实测、证书签发和学校本人登录需分别核验。`tests/session_ui_smoke.py` 使用合成快照验证浏览器保存、工作台清理／后端重启后的恢复、存储降级与清除；不请求真实学校服务。Firefox / Safari 尚需在目标设备验收，不能将单一浏览器模拟故障的结果表述为其他浏览器的实测。
+另行保管 `.env` 和部署者的代理配置，限制读取权限。不要上传卷、备份、浏览器包或环境文件到 Git。恢复应在停止服务的情况下，将可信备份整体还原到一个空的恢复卷，再以 Compose 覆盖文件将 `attempts` 指向该卷；确认目录属主为 10001:10001、密钥 0600，先用备份对应版本启动验证，保留原卷以便撤回。不得把旧备份覆盖到仍在接收请求的卷中。服务器迁移还需保持相同 origin，浏览器才有机会恢复原包。
+
+### 从内置网关版本迁移
+
+新 Compose 不再包含 `gateway`，也不会自动停掉旧网关、删除证书卷或接管现有代理。曾使用内置 Caddy 的部署者，应先准备自己的 HTTPS 入口，再用旧 Compose 配置停止旧 `gateway`，随后切换后端配置；保留已有证书卷，不执行卷清理。已有宿主机 Nginx 或独立部署包的用户，只需核对完整 `PUBLIC_ORIGIN`（特别是端口）、网关密钥、项目名和数据卷对应关系，无需改动其证书与站点。
+
+旧 `.env` 的 `SITE_DOMAIN` / `ACME_EMAIL` 不再使用，改填 `PUBLIC_ORIGIN`；旧 Nginx 端口覆盖文件通常不再需要，使用前先检查最终配置，避免叠加多个端口映射。升级仓库不会自动迁移服务器上的自定义文件。
+
+更早的入口认证版本使用 `GS1` 会话包，当前 `GS2` 仅绑定站点和浏览器，升级后需重新完成一次学校登录。同步移除旧入口账号认证与身份头，使用 `MAX_SESSIONS_PER_BROWSER` 替代 `MAX_SESSIONS_PER_USER`，保留密钥、许可数据库与防重复日志。此前已使用 `GS2` 的部署，不因本次打包调整强制重登。
+
+## 常见问题
+
+| 现象 | 排查方向 |
+| --- | --- |
+| 健康正常，但页面 / API 返回 403 | 直连后端为预期；核对代理密钥、可信 IP 头、完整 Host 和非标准端口；写请求再核对 Origin / CSRF |
+| HTTPS 入口不可达或证书不可信 | 属于部署者入口：检查 DNS、实际监听端口、证书链和代理就绪，后端不会自动修复 |
+| `PermissionError` 或 `moonuestc.client` 导入失败 | `moonuestc` 是仓库内 vendor 模块，不要另行 pip 安装同名包。新镜像显式规范公开源码权限，并在非 root 下检查导入；外部测试只读挂载也需保证 UID 10001 可读和目录可遍历 |
+| 构建拉取超时或 Chromium 下载慢 | 分别检查 daemon / BuildKit 拉取镜像网络和 RUN 内构建代理，见上文，不关闭 TLS |
+| 页面正常但地图空白 / `ERR_CONNECTION_CLOSED` | 地图由浏览器直连；在失败设备检查图片域名、网络及 CSP，国内部署可配置天地图，见[地图配置与排障](#maps) |
+| 天地图启动缺 Key 或图片加载失败 | 核对 `.env`、容器是否已重新创建，以及平台的地图服务权限、站点限制、配额和错误响应；不要公开含 Key 的请求 URL |
+| 更新后出现全新空状态或无法恢复 | 核对卷名、项目名、origin、密钥和恢复许可是否仍来自原部署；不要删除数据库试错 |
+| 429 / 登录资源不足 | 按并发调整工作台、登录和来源 IP 预算，检查实际 CPU / 内存；不能通过增加副本规避当前单实例约束 |
+
+## 开发验证范围
+
+```sh
+python -m unittest discover -s tests -v
+python tests/hosted_ui_smoke.py
+python tests/session_ui_smoke.py
+python tests/gateway_smoke.py
+```
+
+前两套浏览器测试使用合成学校页面、Cookie 和 mock；路由回调有有界超时，在关闭浏览器上下文前等待已进入回调结束，严格 CSP 下使用函数谓词等待，不放宽页面安全策略。外部页面请求被拦截，不访问学校。地图验证使用合成瓦片，覆盖天地图双图层、连接失败、重试及底图切换时坐标不变，不代表真实地图服务或 Key 已通过验证。`gateway_smoke.py` 使用标准库本地测试代理检查完整的非标准端口 origin、来源头覆盖、旧身份头清除、Secure Cookie、CSP、Host / Origin / CSRF 及直访限制；它不验证某个生产代理产品或公网 TLS。
+
+CI `.github/workflows/docker.yml` 执行合成单元测试、Compose 校验、常规及严格 umask 构建上下文、非 root 只读容器、健康检查、Chromium 和上述浏览器及接入测试。生产镜像不包含测试、环境文件、截图或模拟数据库；测试文件以可读的只读挂载提供。所有这些检查均不代表真实学校 API 提交成功。实际代理、证书及本人学校流程由部署者分别验收，Firefox / Safari 也需目标设备验证。
+
+安装器的回归检查使用临时目录、合成 Key 和 mock Docker 命令，覆盖已有配置及密钥保留、取消不改写、输入校验、文件权限与共享网络命令；不会为测试执行真实安装或修改服务器。CI 使用合成天地图 Key，不请求真实地图服务。
+
+离线模拟器保留于源码，镜像不包含或启动它；本次没有增加定时提交。

@@ -15,8 +15,10 @@
 <div class="privacy-note"><span>⌑</span><p>开启记住登录后，加密会话包保存在此浏览器；后端按需解密到独立内存。位置需重新确认。服务器会处理学校凭据，请仅在可信服务上登录。</p></div>
 </section>
 <section class="card location-card"><div class="section-title"><span class="step">02</span><div><h2>选择实际位置</h2><p>点击地图选点，或手动输入坐标</p></div><nav class="campus-switch" aria-label="查看校区"><span>查看</span><button id="campus-shahe" type="button" aria-pressed="true">沙河</button><button id="campus-qingshuihe" type="button" aria-pressed="false">清水河</button></nav></div>
+<div class="map-toolbar"><label for="map-provider">地图底图</label><select id="map-provider" disabled><option value="">正在加载…</option></select><button id="retry-map" class="text-button" type="button" hidden>重试底图</button></div>
+<p id="map-status" class="map-status" role="status" hidden></p>
 <div class="map-shell"><div id="map" aria-label="点击地图选择位置"></div><div class="map-tip" id="map-tip">点击地图，设置你的实际位置</div></div>
-<div class="map-meta"><span>底图：OpenStreetMap · WGS-84</span><span id="point-state">尚未选点</span></div>
+<div class="map-meta"><span id="map-source">正在读取底图配置</span><span id="point-state">尚未选点</span></div>
 <form id="location-form"><div class="location-fields"><div><label for="place-name">位置名称</label><input id="place-name" placeholder="例如：宿舍" maxlength="80"></div><div><label for="coordinate-system">输入坐标系</label><select id="coordinate-system"><option value="wgs84">WGS-84（地图 / GPS）</option><option value="gcj02">GCJ-02（高德）</option></select></div><div><label for="longitude">经度</label><input id="longitude" type="number" step="any" min="-180" max="180" placeholder="103.93…" required></div><div><label for="latitude">纬度</label><input id="latitude" type="number" step="any" min="-90" max="90" placeholder="30.75…" required></div></div><div class="location-bottom"><p id="converted">地图选点会自动转换为学校使用的 GCJ-02。</p><button type="submit" class="button secondary" id="save-location">保存位置</button></div></form>
 </section>
 </div>

@@ -3,10 +3,11 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 import os
+import re
 import secrets
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from browser_login import BrowserLogin
 from core import normalize_location
@@ -25,6 +26,8 @@ class HostedSettings:
     package_seconds: int = 604800
     max_packages: int = 1024
     source_rate_multiplier: int = 4
+    map_provider: str = 'auto'
+    tianditu_key: str = ''
 
     def __post_init__(self):
         u = urlsplit(self.public_origin)
@@ -34,6 +37,12 @@ class HostedSettings:
             raise ValueError('PUBLIC_ORIGIN must be an HTTPS origin without a trailing slash.')
         if len(self.gateway_secret) < 32 or not self.gateway_secret.isascii():
             raise ValueError('GATEWAY_SECRET must contain at least 32 ASCII characters.')
+        if self.map_provider not in ('auto', 'tianditu', 'osm'):
+            raise ValueError('MAP_PROVIDER must be auto, tianditu, or osm.')
+        if self.tianditu_key and not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', self.tianditu_key):
+            raise ValueError('TIANDITU_KEY must be an API key without whitespace or URL characters.')
+        if self.map_provider == 'tianditu' and not self.tianditu_key:
+            raise ValueError('MAP_PROVIDER=tianditu requires TIANDITU_KEY.')
         for key in ('idle_seconds', 'lifetime_seconds', 'max_sessions', 'max_sessions_per_browser', 'max_logins',
                     'package_seconds', 'max_packages', 'source_rate_multiplier'):
             if getattr(self, key) <= 0:
@@ -48,7 +57,39 @@ class HostedSettings:
             'package_seconds': 'SESSION_PACKAGE_TTL_SECONDS', 'max_packages': 'MAX_SAVED_DEVICES',
             'source_rate_multiplier': 'SOURCE_RATE_MULTIPLIER',
         }.items() if env in os.environ}
-        return cls(os.environ['PUBLIC_ORIGIN'], os.environ['GATEWAY_SECRET'], **values)
+        return cls(os.environ['PUBLIC_ORIGIN'], os.environ['GATEWAY_SECRET'],
+                   map_provider=os.environ.get('MAP_PROVIDER', 'auto').strip().lower(),
+                   tianditu_key=os.environ.get('TIANDITU_KEY', '').strip(), **values)
+
+    def map_config(self):
+        """Browser-visible map configuration; never include school or gateway secrets."""
+        providers = [{
+            'id': 'osm', 'name': 'OpenStreetMap', 'reference': 'WGS-84', 'maxZoom': 19,
+            'layers': [{'url': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        'attribution': '© <a href="https://www.openstreetmap.org/copyright" '
+                                       'target="_blank" rel="noopener">OpenStreetMap</a> contributors'}],
+        }]
+        if self.tianditu_key:
+            layers = []
+            for name in ('vec', 'cva'):
+                layers.append({
+                    'url': (f'https://t{{s}}.tianditu.gov.cn/{name}_w/wmts?SERVICE=WMTS&REQUEST=GetTile'
+                            f'&VERSION=1.0.0&LAYER={name}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles'
+                            f'&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}&tk={quote(self.tianditu_key, safe="")}'),
+                    'subdomains': '01234567',
+                    'attribution': ('引自 <a href="https://www.tianditu.gov.cn" target="_blank" '
+                                    'rel="noopener">天地图</a>') if name == 'vec' else '',
+                })
+            providers.insert(0, {'id': 'tianditu', 'name': '天地图', 'reference': 'CGCS2000',
+                                 'maxZoom': 18, 'layers': layers})
+        default = providers[0]['id'] if self.map_provider == 'auto' else self.map_provider
+        return {'default': default, 'providers': providers}
+
+    def map_image_sources(self):
+        sources = ['https://tile.openstreetmap.org']
+        if self.tianditu_key:
+            sources.extend(f'https://t{i}.tianditu.gov.cn' for i in range(8))
+        return ' '.join(sources)
 
 
 class MemoryStore:

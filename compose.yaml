@@ -2,12 +2,17 @@ name: goodnightuestc
 services:
   backend:
     image: ${BACKEND_IMAGE:-goodnightuestc-web:local}
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
     init: true
     restart: unless-stopped
     environment:
-      PUBLIC_ORIGIN: https://${SITE_DOMAIN:?Set SITE_DOMAIN in .env}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the full HTTPS PUBLIC_ORIGIN in .env}
       GATEWAY_SECRET: ${GATEWAY_SECRET:?Set a random GATEWAY_SECRET in .env}
+      MAP_PROVIDER: ${MAP_PROVIDER:-auto}
+      TIANDITU_KEY: ${TIANDITU_KEY:-}
       SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-1800}
       SESSION_LIFETIME_SECONDS: ${SESSION_LIFETIME_SECONDS:-28800}
       SESSION_PACKAGE_TTL_SECONDS: ${SESSION_PACKAGE_TTL_SECONDS:-604800}
@@ -19,6 +24,8 @@ services:
       UESTC_NETWORK_MODE: direct
     volumes:
       - attempts:/data
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-18090}:8090"
     tmpfs:
       - /tmp:size=512m,mode=1777
     shm_size: 256m
@@ -34,29 +41,7 @@ services:
       driver: json-file
       options: {max-size: 10m, max-file: "3"}
 
-  gateway:
-    image: caddy:2.10.2-alpine
-    restart: unless-stopped
-    environment:
-      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
-      GATEWAY_SECRET: ${GATEWAY_SECRET:?Set GATEWAY_SECRET in .env}
-    ports: ["80:80", "443:443", "443:443/udp"]
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks: [app]
-    logging:
-      driver: json-file
-      options: {max-size: 10m, max-file: "3"}
-
 networks:
   app:
 volumes:
   attempts:
-  caddy_data:
-  caddy_config:

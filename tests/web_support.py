@@ -1,5 +1,6 @@
 """Synthetic Web fixtures shared by unit tests and browser smoke tests."""
 import datetime as dt
+from contextlib import ExitStack
 import os
 import tempfile
 import unittest
@@ -22,6 +23,33 @@ def browser_options():
     """Use bundled Chromium by default; optionally select a local test channel."""
     channel = os.environ.get('TEST_BROWSER_CHANNEL')
     return {'channel': channel} if channel else {}
+
+
+class BrowserContexts:
+    """Drain route.fetch handlers before releasing their browser contexts."""
+    def __init__(self, browser):
+        self.browser = browser
+        self.contexts = []
+
+    def new(self, **options):
+        context = self.browser.new_context(**options)
+        self.contexts.append(context)
+        return context
+
+    def close(self, context):
+        if context not in self.contexts:
+            return
+        self.contexts.remove(context)
+        try:
+            context.unroute_all(behavior='wait')
+        finally:
+            context.close()
+
+    def close_all(self):
+        # ExitStack attempts every cleanup and propagates errors.
+        with ExitStack() as cleanup:
+            for context in list(self.contexts):
+                cleanup.callback(self.close, context)
 
 
 class WebAppTestCase(unittest.TestCase):
