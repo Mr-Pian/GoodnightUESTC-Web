@@ -14,12 +14,10 @@
 
 {$SITE_DOMAIN} {
 	header Strict-Transport-Security "max-age=31536000"
-	basic_auth {
-		import /run/secrets/team_users
-	}
 	reverse_proxy backend:8090 {
 		header_up -Authorization
-		header_up X-Team-User {http.auth.user.id}
+		header_up -X-Team-User
+		header_up X-Client-IP {remote_host}
 		header_up X-Team-Gateway {$GATEWAY_SECRET}
 		transport http {
 			dial_timeout 5s

@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>晚安成电 · 测试组工作台</title><link rel="stylesheet" href="/static/vendor/leaflet.css"><link rel="stylesheet" href="/static/style.css"><script src="/static/vendor/leaflet.js" defer></script><script src="/static/session-storage.js" defer></script><script src="/static/app.js" defer></script><script src="/static/session-persistence.js" defer></script><script src="/static/hosted.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>晚安成电 · Web 工作台</title><link rel="stylesheet" href="/static/vendor/leaflet.css"><link rel="stylesheet" href="/static/style.css"><script src="/static/vendor/leaflet.js" defer></script><script src="/static/session-storage.js" defer></script><script src="/static/app.js" defer></script><script src="/static/session-persistence.js" defer></script><script src="/static/hosted.js" defer></script></head>
 <body>
-<header><a class="brand" href="/">☾ <span>晚安成电<small>TEAM WORKSPACE</small></span></a><span class="mode"><i></i> 手动签到 · 测试组专用</span></header>
+<header><a class="brand" href="/">☾ <span>晚安成电<small>WEB WORKSPACE</small></span></a><span class="mode"><i></i> 手动签到 · 学校账号登录</span></header>
 <main>
 <section class="intro"><div><p class="eyebrow">你的账号，你的独立会话</p><h1>选择位置，确认签到。</h1><p class="lede">登录学校账号，在地图选择实际位置，完成今天的晚安签到。</p></div><div class="safety"><span>每一次签到</span><strong>由你确认 <span>↗</span></strong><small>提交后回读学校记录核对结果</small></div></section>
 <div class="workspace">
@@ -12,7 +12,7 @@
 <div id="remember-session-control" class="session-persistence" hidden><label class="check-label"><input id="remember-session" type="checkbox" checked>在此浏览器记住学校登录</label><small id="remember-session-duration"></small><p id="remember-session-message" role="status"></p><button id="retry-session-restore" class="text-button" type="button" hidden>重试保存或恢复</button></div>
 <div class="account-state"><span class="dot" id="account-dot"></span><div><strong id="account-label">等待导入学校账号</strong><p id="login-message" aria-live="polite">不需要手动复制 Cookie。</p></div></div>
 <div class="small-actions"><button id="cancel-login" class="text-button" type="button" hidden>取消本次登录</button><button id="forget" class="text-button" type="button">清除学校会话与本机保存</button></div>
-<div class="privacy-note"><span>⌑</span><p>开启记住登录后，加密会话包保存在此浏览器；后端按需解密到独立内存。位置需重新确认。服务器会处理学校凭据，请仅在测试组可信服务上登录。</p></div>
+<div class="privacy-note"><span>⌑</span><p>开启记住登录后，加密会话包保存在此浏览器；后端按需解密到独立内存。位置需重新确认。服务器会处理学校凭据，请仅在可信服务上登录。</p></div>
 </section>
 <section class="card location-card"><div class="section-title"><span class="step">02</span><div><h2>选择实际位置</h2><p>点击地图选点，或手动输入坐标</p></div><nav class="campus-switch" aria-label="查看校区"><span>查看</span><button id="campus-shahe" type="button" aria-pressed="true">沙河</button><button id="campus-qingshuihe" type="button" aria-pressed="false">清水河</button></nav></div>
 <div class="map-shell"><div id="map" aria-label="点击地图选择位置"></div><div class="map-tip" id="map-tip">点击地图，设置你的实际位置</div></div>
@@ -24,6 +24,6 @@
 <section class="card tests-card"><div class="section-title"><span class="step">04</span><div><h2>运行测试</h2><p>这两个测试不会提交学校打卡记录</p></div><span class="badge green">仅诊断 · 不提交</span></div><div class="test-options"><div><h3>离线自检</h3><p>检查坐标转换和诊断请求保护，不访问学校。</p><button class="button secondary" id="offline" type="button">运行离线测试 <span>→</span></button></div><div><h3>在线只读检查</h3><p>读取当天状态、允许时段与范围，检查所选位置。</p><button class="button primary" id="online" type="button">检查学校会话和位置 <span>→</span></button></div></div>
 <div id="result" class="result" hidden aria-live="polite"><div class="result-heading"><strong id="result-title"></strong><span id="result-time"></span></div><div id="result-summary" class="result-grid"></div><details><summary>查看测试数据</summary><pre id="result-json"></pre></details></div></section>
 <aside class="disclaimer"><h2>免责声明</h2><p>本工具仅供本人账号及学校允许的用途使用。请遵守学校管理规定，按本人实际位置签到；不得用于代签、伪造位置、批量操作他人账号或绕过学校验证。点击最终确认会向学校提交真实签到记录，请自行核对内容及学校最终记录。本工具不保证持续可用或签到成功；学校会话可加密保存在此浏览器，使用时由服务器处理；共用设备请关闭记住登录并在结束后清除会话。</p></aside>
-<footer><span>☾ 测试组专用 · HTTPS</span><span>位置由你配置，不代表实时定位。学校认证和范围要求仍然适用。</span></footer>
+<footer><span>☾ 学校统一认证 · HTTPS</span><span>位置由你配置，不代表实时定位。学校认证和范围要求仍然适用。</span></footer>
 </main><dialog id="checkin-dialog" aria-labelledby="confirmation-title"><div class="dialog-heading"><span class="step">☾</span><h2 id="confirmation-title">确认今天的签到</h2></div><p class="dialog-copy">即将向学校提交下面的位置信息。</p><dl id="checkin-preview"></dl><label class="check-label"><input id="confirm-location" type="checkbox">我确认本人当前位于所选位置，并提交今天的签到。</label><p id="checkin-error" class="dialog-error" role="alert" hidden></p><div class="dialog-actions"><button id="close-confirmation" class="button secondary" type="button">取消</button><button id="submit-checkin" class="button primary" type="button" disabled>确认并提交签到</button></div></dialog><div id="toast" role="status" hidden></div>
 </body></html>

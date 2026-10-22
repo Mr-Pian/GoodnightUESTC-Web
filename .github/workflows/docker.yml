@@ -19,11 +19,6 @@ jobs:
         run: |
           cp .env.example .env
           echo 'GATEWAY_SECRET=synthetic-ci-gateway-secret-0000000000000000' >> .env
-          python - <<'PY'
-          from pathlib import Path
-          # Synthetic fixture only; no deployed team account is included in CI.
-          Path('deploy/team-users.caddy').write_text('tester $2a$14$GiENISbcALwhYUj/1gDGheVZSJm1gE14FG3Rvs74M5LJpRjVO2we.\n')
-          PY
           docker compose config --quiet
           docker compose build backend
           docker compose run --rm --no-deps gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -54,7 +49,7 @@ jobs:
           except urllib.error.HTTPError as error:
               assert error.code == 403
           else:
-              raise AssertionError('Unauthenticated backend request was allowed')
+              raise AssertionError('Direct backend request without trusted proxy headers was allowed')
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               try:
@@ -69,6 +64,12 @@ jobs:
         run: |
           docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/hosted_ui_smoke.py
           docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/session_ui_smoke.py
+      - name: Check public gateway without site-account authentication
+        run: |
+          docker create --name caddy-test caddy:2.10.2-alpine
+          docker cp caddy-test:/usr/bin/caddy /tmp/caddy
+          docker rm caddy-test
+          CADDY_BIN=/tmp/caddy python tests/gateway_smoke.py
       - name: Clean up
         if: always()
         run: docker compose down -v

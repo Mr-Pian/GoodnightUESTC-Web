@@ -8,7 +8,7 @@ from app import create_app
 from hosted import HostedSettings
 
 BASE = 'https://team.example.com'
-GATEWAY = {'X-Team-Gateway': 'a'*64, 'X-Team-User': 'alice'}
+GATEWAY = {'X-Team-Gateway': 'a'*64, 'X-Client-IP': '192.0.2.1'}
 SNAPSHOT = {'student_id': '202300000001', 'saved_at': 123,
             'user_agent': 'Synthetic Test Browser', 'cookies': [
                 {'name': 'SESSION', 'value': 'synthetic-cookie-secret', 'domain': 'jzsz.uestc.edu.cn',

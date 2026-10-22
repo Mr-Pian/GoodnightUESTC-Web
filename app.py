@@ -1,5 +1,6 @@
 import base64
 import hashlib
+from ipaddress import ip_address
 import json
 from pathlib import Path
 import re
@@ -60,13 +61,19 @@ def create_app(data_dir=None, *, hosted):
             return None
         if request.path != '/api/session/restore' and (request.content_length or 0) > 16384:
             return jsonify(error='请求内容过大。'), 413
-        owner = request.headers.get('X-Team-User', '')
         gateway = request.headers.get('X-Team-Gateway', '')
-        if (not secrets.compare_digest(gateway.encode(), hosted.gateway_secret.encode())
-                or not owner or len(owner) > 128):
-            return jsonify(error='请通过测试组访问入口登录。'), 403
+        if not secrets.compare_digest(gateway.encode(), hosted.gateway_secret.encode()):
+            return jsonify(error='请通过本站 HTTPS 地址访问。'), 403
+        # The proxy overwrites this header. Never use a client-supplied identity or XFF.
+        try:
+            source = str(ip_address(request.headers.get('X-Client-IP', '')))
+        except ValueError:
+            return jsonify(error='代理来源配置不完整。'), 403
         if request.host != urlsplit(hosted.public_origin).netloc:
             return jsonify(error='请求地址不匹配。'), 403
+        device = request.cookies.get(DEVICE_COOKIE, '')
+        g.new_device = not re.fullmatch(r'[A-Za-z0-9_-]{43}', device)
+        g.device = secrets.token_urlsafe(32) if g.new_device else device
         categories = [('all', 240, 60)]
         if request.method == 'POST':
             categories.append(('input' if request.path == '/api/login/input' else 'write',
@@ -75,20 +82,19 @@ def create_app(data_dir=None, *, hosted):
             categories.append(('login', 3, 300))
         if request.path == '/api/session/restore' and request.method == 'POST':
             categories.append(('restore', 5, 300))
-        if not all(limits.allow(owner, *category) for category in categories):
+        # IP budgets survive cleared cookies; devices sharing a NAT keep separate sessions.
+        if not all(limits.allow(('source', source), name, count * hosted.source_rate_multiplier, seconds)
+                   and limits.allow(('browser', g.device), name, count, seconds)
+                   for name, count, seconds in categories):
             response = jsonify(error='请求过于频繁，请稍后重试。')
-            response.headers['Retry-After'] = '300' if request.path == '/api/login' else '60'
+            response.headers['Retry-After'] = '300' if request.path in ('/api/login', '/api/session/restore') else '60'
             return response, 429
-        sid, g.workspace = registry.acquire(session.get('workspace'), owner)
+        sid, g.workspace = registry.acquire(session.get('workspace'), g.device)
         if g.workspace is None:
             return jsonify(error='工作台数量已达上限，请稍后重试。'), 503
         if sid != session.get('workspace'):
             session.clear()
             session['workspace'] = sid
-        g.owner = owner
-        device = request.cookies.get(DEVICE_COOKIE, '')
-        g.new_device = not re.fullmatch(r'[A-Za-z0-9_-]{43}', device)
-        g.device = secrets.token_urlsafe(32) if g.new_device else device
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
             if request.headers.get('Origin') != hosted.public_origin:
                 return jsonify(error='请求来源不匹配，请从工作台页面操作。'), 403
@@ -129,12 +135,12 @@ def create_app(data_dir=None, *, hosted):
 
     def school_call(function, snapshot, *args, **kwargs):
         try:
-            if store.package and not packages.current(store.package, g.owner, g.device):
+            if store.package and not packages.current(store.package, g.device):
                 raise ToolError('session_rejected')
             return function(snapshot, *args, **kwargs)
         except ToolError as error:
             if error.reason in ('session_rejected', 'portal_session_rejected', 'micro_app_unauthorized'):
-                packages.revoke(g.owner, g.device)
+                packages.revoke(g.device)
                 store.forget()
                 with pending_lock:
                     pending.clear()
@@ -169,7 +175,8 @@ def create_app(data_dir=None, *, hosted):
                        account=({'student_id': saved['student_id'],
                                  'saved_at': saved['saved_at'], 'cookie_count': len(saved['cookies'])} if saved else None),
                        location=store.location(), login=login.status(), operation=operation.snapshot(),
-                       persistence=({'owner': packages.tag('owner', g.owner), 'revision': store.revision,
+                       # 'owner' is the frontend's opaque storage namespace, not a site account.
+                       persistence=({'owner': packages.tag('browser', g.device), 'revision': store.revision,
                                      'max_age': hosted.package_seconds,
                                      'expires_at': store.package['expires'] if store.package else None}))
 
@@ -183,7 +190,7 @@ def create_app(data_dir=None, *, hosted):
             snapshot = store.session()
             if not snapshot:
                 return jsonify(error='请先完成学校登录。'), 400
-            token, grant = packages.export(snapshot, g.owner, g.device, store.package)
+            token, grant = packages.export(snapshot, g.device, store.package)
             store.package = grant
             g.renew_device = True
             return jsonify(ok=True, token=token, expires_at=grant['expires'], revision=store.revision)
@@ -198,15 +205,15 @@ def create_app(data_dir=None, *, hosted):
             if store.session() or (login.thread and login.thread.is_alive()):
                 return jsonify(error='当前已有登录或正在登录，请先清除后再恢复。'), 409
             data = request.get_json()
-            snapshot, grant = packages.restore(data.get('token') if isinstance(data, dict) else None, g.owner, g.device)
+            snapshot, grant = packages.restore(data.get('token') if isinstance(data, dict) else None, g.device)
             # One bounded read-only check; no browser, credential POST or submission.
             school_call(verify_session, snapshot)
-            if not packages.current(grant, g.owner, g.device):
+            if not packages.current(grant, g.device):
                 raise PackageError('saved_session_unavailable')
             store.save_session(snapshot)
             store.package = grant
             g.renew_device = True
-            token, _ = packages.export(snapshot, g.owner, g.device, grant)
+            token, _ = packages.export(snapshot, g.device, grant)
             return jsonify(ok=True, token=token, expires_at=grant['expires'], revision=store.revision)
         finally:
             test_lock.release()
@@ -216,7 +223,7 @@ def create_app(data_dir=None, *, hosted):
         if not test_lock.acquire(blocking=False):
             return jsonify(error='正在执行操作，请稍后清除保存的登录。'), 409
         try:
-            packages.revoke(g.owner, g.device)
+            packages.revoke(g.device)
             store.package = None
             return jsonify(ok=True)
         finally:
@@ -266,7 +273,7 @@ def create_app(data_dir=None, *, hosted):
         try:
             if login.thread and login.thread.is_alive():
                 return jsonify(error='请先取消登录，等待登录窗口关闭后再清除。'), 409
-            packages.revoke(g.owner, g.device)
+            packages.revoke(g.device)
             store.forget()
             with pending_lock:
                 pending.clear()

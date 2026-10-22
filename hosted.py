@@ -20,11 +20,11 @@ class HostedSettings:
     idle_seconds: int = 1800
     lifetime_seconds: int = 28800
     max_sessions: int = 64
-    max_sessions_per_user: int = 8
+    max_sessions_per_browser: int = 8
     max_logins: int = 2
     package_seconds: int = 604800
     max_packages: int = 1024
-    max_packages_per_user: int = 8
+    source_rate_multiplier: int = 4
 
     def __post_init__(self):
         u = urlsplit(self.public_origin)
@@ -34,8 +34,8 @@ class HostedSettings:
             raise ValueError('PUBLIC_ORIGIN must be an HTTPS origin without a trailing slash.')
         if len(self.gateway_secret) < 32 or not self.gateway_secret.isascii():
             raise ValueError('GATEWAY_SECRET must contain at least 32 ASCII characters.')
-        for key in ('idle_seconds', 'lifetime_seconds', 'max_sessions', 'max_sessions_per_user', 'max_logins',
-                    'package_seconds', 'max_packages', 'max_packages_per_user'):
+        for key in ('idle_seconds', 'lifetime_seconds', 'max_sessions', 'max_sessions_per_browser', 'max_logins',
+                    'package_seconds', 'max_packages', 'source_rate_multiplier'):
             if getattr(self, key) <= 0:
                 raise ValueError(key + ' must be positive.')
 
@@ -43,10 +43,10 @@ class HostedSettings:
     def from_env(cls):
         values = {key: int(os.environ[env]) for key, env in {
             'idle_seconds': 'SESSION_IDLE_SECONDS', 'lifetime_seconds': 'SESSION_LIFETIME_SECONDS',
-            'max_sessions': 'MAX_SESSIONS', 'max_sessions_per_user': 'MAX_SESSIONS_PER_USER',
+            'max_sessions': 'MAX_SESSIONS', 'max_sessions_per_browser': 'MAX_SESSIONS_PER_BROWSER',
             'max_logins': 'MAX_CONCURRENT_LOGINS',
             'package_seconds': 'SESSION_PACKAGE_TTL_SECONDS', 'max_packages': 'MAX_SAVED_DEVICES',
-            'max_packages_per_user': 'MAX_SAVED_DEVICES_PER_USER',
+            'source_rate_multiplier': 'SOURCE_RATE_MULTIPLIER',
         }.items() if env in os.environ}
         return cls(os.environ['PUBLIC_ORIGIN'], os.environ['GATEWAY_SECRET'], **values)
 
@@ -142,19 +142,19 @@ class WorkspaceRegistry:
                     self.entries.pop(sid)
                     entry.close()
 
-    def acquire(self, sid, owner):
+    def acquire(self, sid, device):
         with self.lock:
             self.prune()
             saved = self.entries.get(sid)
-            # A cookie copied to another gateway identity never carries its state over.
-            if not saved or saved[0] != owner:
+            # A workspace cookie alone cannot carry state to another browser device.
+            if not saved or saved[0] != device:
                 if (len(self.entries) >= self.settings.max_sessions or
-                        sum(o == owner for o, _ in self.entries.values()) >= self.settings.max_sessions_per_user):
+                        sum(d == device for d, _ in self.entries.values()) >= self.settings.max_sessions_per_browser):
                     return None, None
                 sid = secrets.token_urlsafe(32)
                 store = MemoryStore()
                 entry = Workspace(store, BrowserLogin(store, slots=self.logins))
-                self.entries[sid] = owner, entry
+                self.entries[sid] = device, entry
             else:
                 entry = saved[1]
             entry.references += 1
@@ -178,18 +178,18 @@ class WorkspaceRegistry:
 
 
 class RateLimits:
-    """Per gateway identity, so opening another browser cannot reset a budget."""
+    """Bounded time windows for browser devices and trusted proxy source IPs."""
     def __init__(self):
         self.lock = threading.Lock()
         self.events = {}
 
-    def allow(self, owner, category, count, seconds):
+    def allow(self, identity, category, count, seconds):
         instant = time.monotonic()
         with self.lock:
             for key, events in list(self.events.items()):
                 if not events or instant - events[-1] >= 300:
                     self.events.pop(key)
-            events = self.events.setdefault((owner, category), deque())
+            events = self.events.setdefault((identity, category), deque())
             while events and events[0] <= instant - seconds:
                 events.popleft()
             if len(events) >= count:

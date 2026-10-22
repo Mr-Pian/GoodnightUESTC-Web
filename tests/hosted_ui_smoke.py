@@ -38,28 +38,26 @@ def main():
                 </body></html>''')
             school_frame = school.screenshot(type='jpeg')
 
-            def route_for(owner):
-                def proxy(route):
-                    if not route.request.url.startswith(BASE + '/'):
-                        route.abort()
-                        return
-                    response = route.fetch(
-                        url=route.request.url.replace(BASE, 'http://127.0.0.1:'+str(server.effective_port)),
-                        headers={**route.request.headers, 'host': 'team.example.com',
-                                 'X-Team-Gateway': SECRET, 'X-Team-User': owner})
-                    route.fulfill(response=response)
-                return proxy
+            def proxy(route):
+                if not route.request.url.startswith(BASE + '/'):
+                    route.abort()
+                    return
+                response = route.fetch(
+                    url=route.request.url.replace(BASE, 'http://127.0.0.1:'+str(server.effective_port)),
+                    headers={**route.request.headers, 'host': 'team.example.com',
+                             'X-Team-Gateway': SECRET, 'X-Client-IP': '192.0.2.1'})
+                route.fulfill(response=response)
 
             a = browser.new_context(viewport={'width': 1440, 'height': 1200})
             b = browser.new_context(viewport={'width': 390, 'height': 844})
-            a.route('**/*', route_for('alice'))
-            b.route('**/*', route_for('bob'))
+            a.route('**/*', proxy)
+            b.route('**/*', proxy)
             page, other = a.new_page(), b.new_page()
             page.on('pageerror', lambda error: errors.append(str(error)))
             other.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(BASE, wait_until='networkidle')
             other.goto(BASE, wait_until='networkidle')
-            expect(page.locator('.mode')).to_contain_text('测试组专用')
+            expect(page.locator('.mode')).to_contain_text('学校账号登录')
             expect(other.locator('#account-label')).to_have_text('等待导入学校账号')
 
             started = []

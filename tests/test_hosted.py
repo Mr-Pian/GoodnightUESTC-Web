@@ -45,13 +45,25 @@ class HostedTests(unittest.TestCase):
         return entry
 
     def test_gateway_host_origin_and_csrf_all_enforced(self):
-        for headers in ({}, {'X-Team-User': 'alice'}, {**GATEWAY, 'X-Team-Gateway': 'bad'}):
+        for headers in ({}, {'X-Team-User': 'alice'}, {**GATEWAY, 'X-Team-Gateway': 'bad'},
+                        {'X-Team-Gateway': GATEWAY['X-Team-Gateway']},
+                        {**GATEWAY, 'X-Client-IP': 'forged, 192.0.2.1'}):
             self.assertEqual(self.a.get('/api/status', base_url=BASE, headers=headers).status_code, 403)
         self.assertEqual(self.a.get('/api/status', base_url='https://wrong.example', headers=GATEWAY).status_code, 403)
         for headers in ({'Origin': 'https://wrong.example'}, {'Origin': 'http://team.example.com'},
                         {'X-CSRF-Token': ''}, {'X-CSRF-Token': self.cb}):
             self.assertEqual(self.post(self.a, self.ca, '/api/location', POINT, **headers).status_code, 403)
         self.assertEqual(self.post(self.a, self.ca, '/api/location', POINT).status_code, 200)
+
+    def test_page_and_status_need_no_site_account_but_school_actions_require_login(self):
+        with self.a.get('/', base_url=BASE, headers=GATEWAY) as response:
+            self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.state(self.a)['account'])
+        with patch('app.prepare_checkin') as prepare, patch('app.online_test') as online:
+            self.assertEqual(self.post(self.a, self.ca, '/api/checkin/prepare', {}).status_code, 400)
+            self.assertEqual(self.post(self.a, self.ca, '/api/test/online', {}).status_code, 400)
+            prepare.assert_not_called()
+            online.assert_not_called()
 
     def test_cookie_is_secure_and_contains_no_school_credentials(self):
         response = self.app.test_client().get('/api/status', base_url=BASE, headers=GATEWAY)
@@ -89,10 +101,18 @@ class HostedTests(unittest.TestCase):
         self.assertIsNot(ta.jar, tb.jar)
         self.assertEqual(len(tb.jar), 0)
 
-    def test_same_gateway_user_has_independent_browsers_and_new_identity_cannot_reuse_cookie(self):
+    def test_browsers_at_same_ip_are_isolated_and_forged_site_identity_is_ignored(self):
         self.seed(self.a)
         self.assertIsNone(self.state(self.b)['account'])
-        changed = self.state(self.a, **{'X-Team-User': 'bob'})
+        unchanged = self.state(self.a, **{'X-Team-User': 'bob', 'X-Client-IP': '2001:db8::1'})
+        self.assertEqual(unchanged['account']['student_id'], SNAPSHOT['student_id'])
+        self.assertEqual(unchanged['csrf'], self.ca)
+        # Copying only the signed workspace cookie cannot attach another device to it.
+        workspace_cookie = self.a.get_cookie('__Host-uestc', domain='team.example.com').value
+        self.b.set_cookie('__Host-uestc', workspace_cookie, domain='team.example.com', secure=True)
+        self.assertIsNone(self.state(self.b, **{'X-Team-User': 'alice'})['account'])
+        self.a.delete_cookie(DEVICE_COOKIE, domain='team.example.com')
+        changed = self.state(self.a)
         self.assertIsNone(changed['account'])
         self.assertNotEqual(changed['csrf'], self.ca)
 
@@ -158,13 +178,34 @@ class HostedTests(unittest.TestCase):
         self.assertIsNone(entry.store.session())
         self.assertIsNone(self.state(self.a)['account'])
 
-    def test_login_rate_limit_survives_new_browser_sessions(self):
+    def test_browser_rate_limit_survives_workspace_cookie_reset_and_ip_change(self):
         with patch('browser_login.BrowserLogin.start'):
             for _ in range(3):
                 self.assertEqual(self.post(self.a, self.ca, '/api/login', {'student_id': SNAPSHOT['student_id'], 'password': 'synthetic'}).status_code, 202)
-            response = self.post(self.b, self.cb, '/api/login', {'student_id': SNAPSHOT['student_id'], 'password': 'synthetic'})
+            self.a.delete_cookie('__Host-uestc', domain='team.example.com')
+            csrf = self.state(self.a)['csrf']
+            response = self.post(self.a, csrf, '/api/login', {'student_id': SNAPSHOT['student_id'], 'password': 'synthetic'},
+                                 **{'X-Client-IP': '198.51.100.1'})
         self.assertEqual(response.status_code, 429)
         self.assertIn('Retry-After', response.headers)
+
+    def test_source_login_rate_limit_survives_fresh_devices_and_forged_forwarding_headers(self):
+        with patch('browser_login.BrowserLogin.start'):
+            for _ in range(self.settings.source_rate_multiplier):
+                client = self.app.test_client()
+                csrf = self.state(client)['csrf']
+                for _ in range(3):
+                    self.assertEqual(self.post(client, csrf, '/api/login', {
+                        'student_id': SNAPSHOT['student_id'], 'password': 'synthetic'}).status_code, 202)
+            client = self.app.test_client()
+            csrf = self.state(client)['csrf']
+            data = {'student_id': SNAPSHOT['student_id'], 'password': 'synthetic'}
+            response = self.post(client, csrf, '/api/login', data,
+                                 **{'X-Forwarded-For': '198.51.100.1', 'X-Team-User': 'forged'})
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(response.headers['Retry-After'], '300')
+            self.assertEqual(self.post(client, csrf, '/api/login', data,
+                                      **{'X-Client-IP': '198.51.100.1'}).status_code, 202)
 
     def test_unexpected_exceptions_do_not_expose_secrets(self):
         self.seed(self.a)
@@ -186,17 +227,20 @@ class HostedTests(unittest.TestCase):
         self.ca = self.state(self.a)['csrf']
         self.assertIsNone(self.state(self.a)['account'])
 
-    def test_restore_after_workspace_cleanup_uses_only_readonly_validation(self):
+    def test_restore_after_workspace_cleanup_and_network_change_uses_only_readonly_validation(self):
         package = self.exported()
+        namespace = self.state(self.a)['persistence']['owner']
         self.expire_workspace()
         with patch('app.verify_session') as verify, patch.object(BrowserLogin, 'start') as login:
-            response = self.post(self.a, self.ca, '/api/session/restore', {'token': package['token']})
+            response = self.post(self.a, self.ca, '/api/session/restore', {'token': package['token']},
+                                 **{'X-Client-IP': '198.51.100.9', 'X-Team-User': 'ignored'})
         self.assertEqual(response.status_code, 200)
         verify.assert_called_once()
         login.assert_not_called()
         self.assertEqual(self.state(self.a)['account']['student_id'], SNAPSHOT['student_id'])
         self.assertIsNone(self.state(self.a)['location'])
         self.assertEqual(response.json['expires_at'], package['expires_at'])
+        self.assertEqual(self.state(self.a)['persistence']['owner'], namespace)
 
     def test_package_restores_after_backend_restart_without_old_workspace_cookie(self):
         package = self.exported()
@@ -214,7 +258,7 @@ class HostedTests(unittest.TestCase):
         finally:
             restarted.extensions['workspaces'].close()
 
-    def test_wrong_device_identity_tampering_and_missing_csrf_never_reach_school(self):
+    def test_wrong_device_tampering_and_missing_csrf_never_reach_school(self):
         package = self.exported()
         self.expire_workspace()
         bad = package['token'][:40] + ('A' if package['token'][40] != 'A' else 'B') + package['token'][41:]
@@ -222,8 +266,8 @@ class HostedTests(unittest.TestCase):
             self.assertEqual(self.post(self.b, self.cb, '/api/session/restore', {'token': package['token']}).status_code, 400)
             self.assertEqual(self.post(self.a, self.ca, '/api/session/restore', {'token': bad}).status_code, 400)
             self.assertEqual(self.post(self.a, '', '/api/session/restore', {'token': package['token']}).status_code, 403)
-            bob = self.state(self.a, **{'X-Team-User': 'bob'})
-            response = self.post(self.a, bob['csrf'], '/api/session/restore', {'token': package['token']}, **{'X-Team-User': 'bob'})
+            response = self.post(self.b, self.cb, '/api/session/restore', {'token': package['token']},
+                                 **{'X-Team-User': 'alice'})
             self.assertEqual(response.status_code, 400)
             verify.assert_not_called()
 
@@ -285,6 +329,20 @@ class HostedTests(unittest.TestCase):
 
 
 class ResourceTests(unittest.TestCase):
+    def test_browser_workspace_capacity_does_not_consume_other_device_quota(self):
+        registry = WorkspaceRegistry(HostedSettings(BASE, 'a'*32, max_sessions_per_browser=1), reap=False)
+        try:
+            sid, entry = registry.acquire(None, 'device-a')
+            registry.release(entry)
+            self.assertEqual(registry.acquire(None, 'device-a'), (None, None))
+            # Existing workspaces can still be reused at the per-browser limit.
+            reused_sid, reused = registry.acquire(sid, 'device-a')
+            self.assertEqual(reused_sid, sid)
+            registry.release(reused)
+            self.assertIsNotNone(registry.acquire(None, 'device-b')[1])
+        finally:
+            registry.close()
+
     def test_active_requests_are_leased_and_capacity_is_bounded(self):
         registry = WorkspaceRegistry(HostedSettings(BASE, 'a'*32, max_sessions=1), reap=False)
         try:
@@ -362,6 +420,15 @@ class ResourceTests(unittest.TestCase):
                 HostedSettings(origin, secret)
         with self.assertRaises(ValueError):
             HostedSettings(BASE, 'a'*32, max_logins=0)
+        with self.assertRaises(ValueError):
+            HostedSettings(BASE, 'a'*32, source_rate_multiplier=0)
+
+    def test_browser_capacity_and_source_budget_are_loaded_from_environment(self):
+        with patch.dict('os.environ', {'PUBLIC_ORIGIN': BASE, 'GATEWAY_SECRET': 'a'*32,
+                                     'MAX_SESSIONS_PER_BROWSER': '2', 'SOURCE_RATE_MULTIPLIER': '6'}, clear=True):
+            settings = HostedSettings.from_env()
+        self.assertEqual(settings.max_sessions_per_browser, 2)
+        self.assertEqual(settings.source_rate_multiplier, 6)
 
 
 if __name__ == '__main__':

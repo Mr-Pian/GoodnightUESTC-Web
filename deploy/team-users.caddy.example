@@ -1,4 +1,0 @@
-# Replace this with one unique gateway username and bcrypt hash per team member.
-# Generate interactively: docker run --rm -it caddy:2.10.2-alpine caddy hash-password
-# Example structure only (not an enabled account):
-# tester1 $2a$14$REPLACE_WITH_THE_GENERATED_HASH

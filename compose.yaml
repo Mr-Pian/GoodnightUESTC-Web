@@ -12,10 +12,10 @@ services:
       SESSION_LIFETIME_SECONDS: ${SESSION_LIFETIME_SECONDS:-28800}
       SESSION_PACKAGE_TTL_SECONDS: ${SESSION_PACKAGE_TTL_SECONDS:-604800}
       MAX_SAVED_DEVICES: ${MAX_SAVED_DEVICES:-1024}
-      MAX_SAVED_DEVICES_PER_USER: ${MAX_SAVED_DEVICES_PER_USER:-8}
       MAX_SESSIONS: ${MAX_SESSIONS:-64}
-      MAX_SESSIONS_PER_USER: ${MAX_SESSIONS_PER_USER:-8}
+      MAX_SESSIONS_PER_BROWSER: ${MAX_SESSIONS_PER_BROWSER:-8}
       MAX_CONCURRENT_LOGINS: ${MAX_CONCURRENT_LOGINS:-2}
+      SOURCE_RATE_MULTIPLIER: ${SOURCE_RATE_MULTIPLIER:-4}
       UESTC_NETWORK_MODE: direct
     volumes:
       - attempts:/data
@@ -46,7 +46,6 @@ services:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    secrets: [team_users]
     depends_on:
       backend:
         condition: service_healthy
@@ -61,6 +60,3 @@ volumes:
   attempts:
   caddy_data:
   caddy_config:
-secrets:
-  team_users:
-    file: ./deploy/team-users.caddy

@@ -92,71 +92,71 @@ class SessionPackages:
     def tag(self, purpose, value):
         return hmac.new(self.key, (purpose + '\0' + value).encode(), hashlib.sha256).hexdigest()
 
-    def identity(self, owner, device):
-        return self.tag('owner', owner), self.tag('device', device)
+    def identity(self, device):
+        # Retain the SQL schema so upgrades preserve the key, grants and attempt log.
+        # Old site-account grants expire normally; only GS2 browser grants are usable here.
+        return 'browser-v2', self.tag('device', device)
 
-    def aad(self, owner, device):
-        return json.dumps(['school-session-v1', self.settings.public_origin, owner, device],
+    def aad(self, device):
+        return json.dumps(['school-session-v2', self.settings.public_origin, device],
                           ensure_ascii=True, separators=(',', ':')).encode()
 
-    def current(self, grant, owner, device):
+    def current(self, grant, device):
         if not grant:
             return False
         with self.db() as db:
             row = db.execute('SELECT grant_id, issued, expires FROM packages WHERE owner=? AND device=?',
-                             self.identity(owner, device)).fetchone()
+                             self.identity(device)).fetchone()
         return row == (grant['id'], grant['issued'], grant['expires']) and row[2] > time.time()
 
-    def revoke(self, owner, device):
+    def revoke(self, device):
         with self.db() as db:
-            db.execute('DELETE FROM packages WHERE owner=? AND device=?', self.identity(owner, device))
+            db.execute('DELETE FROM packages WHERE owner=? AND device=?', self.identity(device))
 
-    def export(self, snapshot, owner, device, grant=None):
+    def export(self, snapshot, device, grant=None):
         snapshot = checked_snapshot(snapshot)
         instant = time.time()
         fresh = grant is None
         if grant is not None:
-            if not self.current(grant, owner, device):
+            if not self.current(grant, device):
                 raise PackageError('saved_session_unavailable')
         else:
             grant = {'id': secrets.token_urlsafe(24), 'issued': instant,
                      'expires': instant + self.settings.package_seconds}
-        payload = json.dumps({'v': 1, 'grant': grant, 'snapshot': snapshot},
+        payload = json.dumps({'v': 2, 'grant': grant, 'snapshot': snapshot},
                              separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode()
         # Bound allocations before encryption and the JSON request on restoration.
         if len(payload) > 48000:
             raise PackageError('saved_session_too_large')
         cipher = AES.new(self.key, AES.MODE_GCM, nonce=secrets.token_bytes(12))
-        cipher.update(self.aad(owner, device))
+        cipher.update(self.aad(device))
         encrypted, tag = cipher.encrypt_and_digest(payload)
-        token = base64.urlsafe_b64encode(b'GS1' + cipher.nonce + tag + encrypted).decode()
+        token = base64.urlsafe_b64encode(b'GS2' + cipher.nonce + tag + encrypted).decode()
         if len(token) > MAX_PACKAGE_BYTES:
             raise PackageError('saved_session_too_large')
         if fresh:
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 db.execute('DELETE FROM packages WHERE expires<=?', (instant,))
-                identity = self.identity(owner, device)
+                identity = self.identity(device)
                 present = db.execute('SELECT 1 FROM packages WHERE owner=? AND device=?', identity).fetchone()
-                if not present and (db.execute('SELECT COUNT(*) FROM packages').fetchone()[0] >= self.settings.max_packages
-                        or db.execute('SELECT COUNT(*) FROM packages WHERE owner=?', (identity[0],)).fetchone()[0]
-                        >= self.settings.max_packages_per_user):
+                if not present and db.execute('SELECT COUNT(*) FROM packages').fetchone()[0] >= self.settings.max_packages:
                     raise PackageError('saved_session_capacity')
                 db.execute('INSERT OR REPLACE INTO packages VALUES (?,?,?,?,?)',
                            (*identity, grant['id'], grant['issued'], grant['expires']))
         return token, grant
 
-    def restore(self, token, owner, device):
+    def restore(self, token, device):
         if not isinstance(token, str) or not 40 <= len(token) <= MAX_PACKAGE_BYTES:
             raise PackageError()
         try:
             raw = base64.b64decode(token, altchars=b'-_', validate=True)
-            if raw[:3] != b'GS1' or len(raw) < 32:
+            if raw[:3] != b'GS2' or len(raw) < 32:
                 raise ValueError()
             cipher = AES.new(self.key, AES.MODE_GCM, nonce=raw[3:15])
-            cipher.update(self.aad(owner, device))
+            cipher.update(self.aad(device))
             payload = json.loads(cipher.decrypt_and_verify(raw[31:], raw[15:31]))
-            if payload['v'] != 1 or not isinstance(payload['grant'], dict):
+            if payload['v'] != 2 or not isinstance(payload['grant'], dict):
                 raise ValueError()
             grant = payload['grant']
             if (set(grant) != {'id', 'issued', 'expires'} or not isinstance(grant['id'], str)
@@ -166,6 +166,6 @@ class SessionPackages:
             raise PackageError() from None
         if grant['expires'] <= time.time():
             raise PackageError('saved_session_expired')
-        if not self.current(grant, owner, device):
+        if not self.current(grant, device):
             raise PackageError('saved_session_unavailable')
         return checked_snapshot(payload['snapshot']), grant

@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from app import create_app
 from core import ToolError
 from hosted import HostedSettings
+from session_packages import DEVICE_COOKIE
 from playwright.sync_api import expect, sync_playwright
 from web_support import POINT, SNAPSHOT, browser_options
 from waitress import create_server
@@ -23,6 +24,7 @@ MESSAGE = '#remember-session-message'
 class Backend:
     def __init__(self, directory):
         self.directory = directory
+        self.devices = {}
         self.start()
 
     def start(self):
@@ -37,7 +39,8 @@ class Backend:
         self.worker.join(timeout=3)
 
     def workspace(self, owner):
-        return next(entry for user, entry in self.app.extensions['workspaces'].entries.values() if user == owner)
+        return next(entry for device, entry in self.app.extensions['workspaces'].entries.values()
+                    if device == self.devices[owner])
 
     def expire(self, owner):
         self.workspace(owner).created -= 28801
@@ -64,7 +67,7 @@ def main():
                     response = route.fetch(
                         url=url.replace(BASE, 'http://127.0.0.1:' + str(backend.server.effective_port)),
                         headers={**route.request.headers, 'host': 'team.example.com',
-                                 'X-Team-Gateway': SECRET, 'X-Team-User': owner})
+                                 'X-Team-Gateway': SECRET, 'X-Client-IP': '192.0.2.1'})
                     route.fulfill(response=response)
 
                 context.route('**/*', proxy)
@@ -78,6 +81,9 @@ def main():
                 return page
 
             def seed(page, owner):
+                # Labels only identify test contexts; the actual isolation key comes from the browser cookie.
+                backend.devices[owner] = next(cookie['value'] for cookie in page.context.cookies()
+                                              if cookie['name'] == DEVICE_COOKIE)
                 backend.workspace(owner).store.save_session(deepcopy(SNAPSHOT))
                 page.evaluate('refresh()')
 
