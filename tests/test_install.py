@@ -88,7 +88,7 @@ class InstallTests(unittest.TestCase):
 
     def test_application_only_commands_use_saved_settings_and_existing_proxy_network(self):
         with patch.object(install.sys.stdin, 'isatty', return_value=True), \
-                patch.object(install, 'check_compose'), \
+                patch.object(install, 'check_tools', return_value=[]), \
                 patch.object(install, 'configure') as configure, \
                 patch.dict('os.environ', {'TIANDITU_KEY': 'stale-shell-key', 'HTTPS_PROXY': 'http://build-proxy'}), \
                 patch.object(install.subprocess, 'run') as run, redirect_stdout(io.StringIO()):
@@ -125,6 +125,39 @@ class InstallTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()), patch.object(install, 'configure') as configure:
             self.assertEqual(install.main([], root=self.root), 1)
         configure.assert_not_called()
+
+    def test_failed_tool_check_does_not_prompt_or_modify_configuration(self):
+        with patch.object(install.sys.stdin, 'isatty', return_value=True), \
+                patch.object(install, 'check_tools', side_effect=ValueError('buildx missing')), \
+                patch.object(install, 'configure') as configure, redirect_stderr(io.StringIO()):
+            self.assertEqual(install.main([], root=self.root), 1)
+        configure.assert_not_called()
+        self.assertFalse((self.root / '.env').exists())
+
+    def test_prebuilt_image_path_never_builds_and_ignores_stale_image_override(self):
+        image = 'ghcr.io/example/goodnightuestc-web:1.0.5'
+        with patch.object(install.sys.stdin, 'isatty', return_value=True), \
+                patch.object(install, 'check_tools', return_value=[]) as check, \
+                patch.object(install, 'configure') as configure, \
+                patch.dict('os.environ', {'BACKEND_IMAGE': 'stale:local'}), \
+                patch.object(install.subprocess, 'run') as run, redirect_stdout(io.StringIO()):
+            self.assertEqual(install.main(['--image', image], root=self.root), 0)
+        check.assert_called_once_with(None, build=False)
+        configure.assert_called_once_with(self.root, None, image=image)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[1][-2:], ['pull', 'backend'])
+        self.assertEqual(commands[2][-5:], ['up', '-d', '--no-build', '--wait', 'backend'])
+        for call in run.call_args_list:
+            self.assertNotIn('--build', call.args[0])
+            self.assertNotIn('BACKEND_IMAGE', call.kwargs['env'])
+
+    def test_selected_image_is_saved_without_changing_other_settings(self):
+        with patch('builtins.input', return_value='https://checkin.example.com'), \
+                patch.object(install.getpass, 'getpass', return_value='synthetic-key'), \
+                redirect_stdout(io.StringIO()):
+            install.configure(self.root, image='ghcr.io/example/web:1.0.5')
+        self.assertEqual(install.env_value((self.root / '.env').read_text(), 'BACKEND_IMAGE'),
+                         'ghcr.io/example/web:1.0.5')
 
 
 if __name__ == '__main__':
