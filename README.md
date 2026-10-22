@@ -35,19 +35,24 @@ vendor/moonuestc/        复用的协议、坐标与传输模块
 
 准备可访问学校官方服务的 Linux 服务器、Docker Engine 和 Compose v2。**Docker 只启动应用**，包含网页、后端和登录所需 Chromium；公网域名、反向代理及 HTTPS 证书由部署者自行接入。安装、配置、更新、回滚和备份见 **[后端部署说明](deploy/README.md#后端安装与启动)**。
 
+发行版：**v1.0.5 / Linux amd64**。从 [GitHub Releases](https://github.com/Mr-Pian/GoodnightUESTC-Web/releases)获取匹配版本的源码部署包、`DEPLOYMENT.md` 与校验文件；完整命令见 **[一步步部署](deploy/QUICKSTART.md)**，服务器预算见 **[资源规划](deploy/RESOURCES.md)**，版本变化见 [CHANGELOG](CHANGELOG.md)。镜像由发行工作流验证通过后发布到 GHCR；请确认对应版本发布成功及包允许公开拉取。
+
 拉取源码后，推荐在服务器交互终端运行：
 
 ```sh
+# 推荐：使用已发布镜像，不在服务器构建。
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+# 自行构建源码：
 python3 deploy/install.py
 ```
 
-安装器只需要宿主机 Python 3.8+ 标准库，不要求在宿主机安装应用依赖。它询问完整 HTTPS 地址和**运维自己申请的天地图 Key**（输入不回显，不能为空），生成缺失的内部代理密钥，将配置保存到权限 `0600` 的 `.env`，然后构建并等待后端健康。再次运行可回车保留已有地址和 Key，内部密钥和其他自定义配置保留。只生成配置可加 `--configure-only`；已有容器代理网络可加 `--proxy-network 网络名`，不会创建网络或修改代理。CI / 无人值守部署可直接维护 `.env` 并运行 Compose。
+安装器只需要宿主机 Python 3.8+ 标准库，不要求在宿主机安装应用依赖。它询问完整 HTTPS 地址和**运维自己申请的天地图 Key**（输入不回显，不能为空），生成缺失的内部代理密钥，将配置保存到权限 `0600` 的 `.env`，然后拉取镜像或构建源码并等待后端健康。再次运行可回车保留已有地址和 Key，内部密钥和其他自定义配置保留。只生成配置可加 `--configure-only`；已有容器代理网络可加 `--proxy-network 网络名`，不会创建网络或修改代理。CI / 无人值守部署可直接维护 `.env` 并运行 Compose。
 
 - 默认仅映射 `127.0.0.1:18090 → 8090`，供现有宿主机代理连接，不绑定公网 80/443、不申请证书。
 - 已有容器代理可使用 [共享网络覆盖文件](deploy/compose.proxy-network.yaml)，访问 `backend:8090` 并取消宿主机端口映射。
 - `PUBLIC_ORIGIN` 显式填写完整 HTTPS origin，支持非标准端口，例如 `https://checkin.example.com:60000`。按照[代理接入约定](deploy/README.md#proxy-contract)配置头、超时和缓存；未接入代理时，后端 `/healthz` 返回 200、普通页面与 API 返回 403 属于预期。
 
-网页不设置额外的网站账号或 HTTP Basic Auth；用户直接完成学校统一认证。`GATEWAY_SECRET` 用于反向代理与后端之间的内部校验，由运维配置，用户无需输入。后端采用单进程、单副本、多线程模式，不支持直接增加多个 WSGI worker 或后端副本。目前提供源码构建，未发布官方预构建镜像；发行镜像和 Release 可在版本验收后另行发布。
+网页不设置额外的网站账号或 HTTP Basic Auth；用户直接完成学校统一认证。`GATEWAY_SECRET` 用于反向代理与后端之间的内部校验，由运维配置，用户无需输入。后端采用单进程、单副本、多线程模式，不支持直接增加多个 WSGI worker 或后端副本。工具预检要求 Docker CLI / Engine >= 24、Compose >= 2.20；源码构建需 buildx >= 0.12，共享代理网络需 Compose >= 2.24.4。缺少工具或 daemon 权限会在依赖下载前提示。
 
 ## 使用流程
 
@@ -116,7 +121,7 @@ MAP_PROVIDER=tianditu
 TIANDITU_KEY=填写自己的天地图Key
 ```
 
-更新到包含此功能的代码后，运行 `docker compose up -d --build backend`，然后刷新网页。天地图的 Key 会出现在浏览器配置和瓦片请求中，属于浏览器可见的地图调用凭据，应使用专用 Key 并配置平台限制；不要填入学校密码、学校 Cookie 或内部 `GATEWAY_SECRET`，也不要把真实 `.env` 提交到仓库。
+使用已发布镜像时，修改配置后运行 `docker compose up -d --no-build --wait backend` 重新创建容器，然后刷新网页；源码改动则先按部署文档重新构建。天地图的 Key 会出现在浏览器配置和瓦片请求中，属于浏览器可见的地图调用凭据，应使用专用 Key 并配置平台限制；不要填入学校密码、学校 Cookie 或内部 `GATEWAY_SECRET`，也不要把真实 `.env` 提交到仓库。
 
 | 配置 | 默认底图与行为 |
 | --- | --- |
@@ -174,7 +179,7 @@ python tests/session_ui_smoke.py
 
 `python tests/gateway_smoke.py` 使用标准库本地测试代理验证非标准端口 Host / Origin、伪造代理头覆盖、Cookie / CSP、CSRF 及后端直连拦截，无需安装 Nginx / Caddy，也不申请证书。`tests/login_ui_contract.py` 是单独手动运行的学校公开登录表单兼容检查：只读取公开页、阻断 POST，不输入凭据；不属于离线测试或 CI。
 
-唯一 CI 为 `.github/workflows/docker.yml`，验证合成单元测试、Compose、常规与严格 umask 镜像构建、容器健康、代理接入约定、Chromium 和两个托管界面流程。生产镜像不包含测试文件，CI 以可读的只读挂载方式运行界面测试。
+测试 CI 为 `.github/workflows/docker.yml`，验证合成单元测试、Compose、常规与严格 umask 镜像构建、容器健康、代理接入约定、Chromium 和两个托管界面流程。生产镜像不包含测试文件，CI 以可读的只读挂载方式运行界面测试。`.github/workflows/release.yml` 在该验证通过后发布版本镜像、源码包和 Release；维护流程及上游合并步骤见 [发行与上游贡献](docs/RELEASING.md)。
 
 ## 独立离线模拟器(弃用)
 
