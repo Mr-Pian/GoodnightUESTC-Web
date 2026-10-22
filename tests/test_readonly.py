@@ -1,23 +1,16 @@
 import json
 from copy import deepcopy
 from email.message import Message
-import tempfile
 import unittest
 import urllib.request
-from pathlib import Path
 from unittest.mock import patch
-from app import create_app
 from browser_login import BrowserLogin
-from core import (LocalStore, ReadOnlyTransport, ReadOnlySchool, ToolError,
+from core import (ReadOnlyTransport, ReadOnlySchool, ToolError,
                   allowed_read, browser_allowed, normalize_location, offline_test, online_test,
                   ORIGIN, now)
+from hosted import MemoryStore
+from web_support import SNAPSHOT, POINT, WebAppTestCase
 
-BASE = 'http://127.0.0.1:8090'
-SNAPSHOT = {'student_id': '202300000001', 'saved_at': 123,
-            'user_agent': 'Synthetic Test Browser', 'cookies': [
-                {'name': 'SESSION', 'value': 'synthetic-cookie-secret', 'domain': 'jzsz.uestc.edu.cn',
-                 'path': '/', 'expires': -1, 'secure': True, 'httpOnly': True}]}
-POINT = {'name': '测试位置', 'latitude': 30.7528, 'longitude': 103.9313, 'coordinate_system': 'wgs84'}
 
 
 class GuardTests(unittest.TestCase):
@@ -134,69 +127,30 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn('private-person', json.dumps(result))
 
 
-class AppTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.app = create_app(self.temp.name)
-        self.client = self.app.test_client()
-        self.status = self.client.get('/api/status', base_url=BASE).json
-        self.headers = {'Origin': BASE, 'X-CSRF-Token': self.status['csrf']}
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def post(self, path, value):
-        return self.client.post(path, json=value, base_url=BASE, headers=self.headers)
-
-    def test_cookie_is_encrypted_and_never_in_public_status(self):
-        store = self.app.extensions['local_store']
-        store.save_session(SNAPSHOT)
-        blob = (Path(self.temp.name)/'session.enc').read_bytes()
-        self.assertNotIn(b'synthetic-cookie-secret', blob)
-        self.assertEqual(store.session(), SNAPSHOT)
-        state = self.client.get('/api/status', base_url=BASE).json
-        self.assertEqual(state['account']['cookie_count'], 1)
-        self.assertNotIn('synthetic-cookie-secret', json.dumps(state))
-
-    def test_tampered_cookie_rejected(self):
-        store = self.app.extensions['local_store']
-        store.save_session(SNAPSHOT)
-        path = Path(self.temp.name)/'session.enc'
-        path.write_bytes(path.read_bytes()[:-1]+b'x')
-        with self.assertRaises(ToolError):
-            store.session()
-
-    def test_cross_origin_and_missing_csrf_denied(self):
-        self.assertEqual(self.client.post('/api/test/offline', json={}, base_url=BASE).status_code, 403)
-        self.assertEqual(self.client.post('/api/test/offline', json={}, base_url=BASE,
-                                         headers={**self.headers, 'Origin': 'https://evil.example'}).status_code, 403)
-        self.assertEqual(self.client.get('/api/status', base_url='http://evil.example').status_code, 403)
-
+class AppTests(WebAppTestCase):
     def test_save_location_and_offline_check(self):
         self.assertEqual(self.post('/api/location', POINT).status_code, 200)
         result = self.post('/api/test/offline', {}).json['result']
         self.assertTrue(result['passed'])
         self.assertFalse(result['submitted'])
 
-    def test_online_requires_imported_session(self):
+    def test_online_requires_school_session(self):
         self.assertEqual(self.post('/api/test/online', {}).status_code, 400)
 
     def test_submit_requires_explicit_confirmation(self):
         self.assertEqual(self.post('/api/checkin', {}).status_code, 400)
         self.assertTrue(self.status['schoolWritesEnabled'])
 
-    def test_forget_removes_local_session(self):
-        store = self.app.extensions['local_store']
-        store.save_session(SNAPSHOT)
+    def test_forget_removes_memory_session(self):
+        self.store.save_session(SNAPSHOT)
         self.assertEqual(self.post('/api/session/forget', {}).status_code, 200)
-        self.assertIsNone(store.session())
+        self.assertIsNone(self.store.session())
 
 
 class LoginTests(unittest.TestCase):
     def test_browser_session_is_saved_only_after_verified_read(self):
-        with tempfile.TemporaryDirectory() as directory, patch('playwright.sync_api.sync_playwright') as playwright, patch('browser_login.NETWORK.browser_options', return_value={}):
-            from unittest.mock import MagicMock
-            store = LocalStore(directory)
+        with patch('playwright.sync_api.sync_playwright') as playwright, patch('browser_login.NETWORK.browser_options', return_value={}):
+            store = MemoryStore()
             manager = BrowserLogin(store)
             browser = playwright.return_value.__enter__.return_value.chromium.launch.return_value
             context = browser.new_context.return_value
@@ -214,8 +168,8 @@ class LoginTests(unittest.TestCase):
             browser.close.assert_called_once()
 
     def test_cancel_during_verification_does_not_save_session(self):
-        with tempfile.TemporaryDirectory() as directory, patch('playwright.sync_api.sync_playwright') as playwright, patch('browser_login.NETWORK.browser_options', return_value={}):
-            store = LocalStore(directory)
+        with patch('playwright.sync_api.sync_playwright') as playwright, patch('browser_login.NETWORK.browser_options', return_value={}):
+            store = MemoryStore()
             manager = BrowserLogin(store)
             context = playwright.return_value.__enter__.return_value.chromium.launch.return_value.new_context.return_value
             context.cookies.return_value = SNAPSHOT['cookies']

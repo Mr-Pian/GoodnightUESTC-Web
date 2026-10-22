@@ -1,17 +1,13 @@
 """Manual submission tests use synthetic school responses only."""
-import datetime as dt
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from app import create_app
 from checkin import Attempts, SubmissionTransport, SUBMIT_URL, prepare_checkin, submit_checkin
 from core import ToolError, normalize_location
-from test_readonly import SNAPSHOT, POINT, BASE
+from web_support import SNAPSHOT, POINT, INSTANT, DAY, WebAppTestCase
 
-INSTANT = dt.datetime(2026, 10, 21, 22, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
-DAY = '2026-10-21'
 SCHEDULE = {'effective': True, 'studentCheckinStartOffsetMinute': 1260,
             'studentCheckinEndOffsetMinute': 1410}
 
@@ -122,25 +118,14 @@ class TransportTests(unittest.TestCase):
             network.assert_not_called()
 
 
-class ConfirmationTests(unittest.TestCase):
+class ConfirmationTests(WebAppTestCase):
     def setUp(self):
+        super().setUp()
         self.clock_patch = patch('app.now', return_value=INSTANT)
         self.clock_patch.start()
-        self.temp = tempfile.TemporaryDirectory()
-        self.app = create_app(self.temp.name)
-        self.client = self.app.test_client()
-        self.store = self.app.extensions['local_store']
+        self.addCleanup(self.clock_patch.stop)
         self.store.save_session(SNAPSHOT)
         self.store.save_location(POINT)
-        csrf = self.client.get('/api/status', base_url=BASE).json['csrf']
-        self.headers = {'Origin': BASE, 'X-CSRF-Token': csrf}
-
-    def tearDown(self):
-        self.clock_patch.stop()
-        self.temp.cleanup()
-
-    def post(self, url, data):
-        return self.client.post(url, json=data, base_url=BASE, headers=self.headers)
 
     def ticket(self):
         with patch('app.prepare_checkin', return_value={'businessDate': DAY, 'submitted': False}):
@@ -168,7 +153,8 @@ class ConfirmationTests(unittest.TestCase):
 
     def test_expired_confirmation_never_submits(self):
         token = self.ticket()
-        with patch('app.time.monotonic', return_value=10**18), patch('app.submit_checkin') as submit:
+        self.workspace.pending[token]['expires'] = 0
+        with patch('app.submit_checkin') as submit:
             response = self.post('/api/checkin', {'confirmation': token, 'confirm': True, 'actual_location_confirmed': True})
             self.assertEqual(response.status_code, 400)
             submit.assert_not_called()

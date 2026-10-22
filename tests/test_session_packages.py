@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from hosted import HostedSettings
 from session_packages import PackageError, SessionPackages
-from test_readonly import SNAPSHOT
+from web_support import SNAPSHOT
 
 
 class PackageTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Isolated Edge or remote Chromium login; credentials remain in memory only."""
+"""Isolated server-side Chromium login; credentials remain in memory only."""
 import re
 import math
 import queue
@@ -13,14 +13,13 @@ ENTRY_URL = ORIGIN + '/daily-checkin/checkLogin?appId=294'
 
 
 class BrowserLogin:
-    def __init__(self, store, *, remote=False, slots=None):
+    def __init__(self, store, *, slots=None):
         self.store = store
         self.lock = threading.Lock()
         self.cancelled = threading.Event()
         self.state = {'state': 'idle', 'message': '尚未开始登录'}
         self.thread = None
         self.started_at = None
-        self.remote = remote
         self.slots = slots
         self.owns_slot = False
         self.commands = queue.Queue(maxsize=16)
@@ -70,7 +69,7 @@ class BrowserLogin:
 
     def command(self, value):
         """Only bounded user input; never accept a URL, selector, or JavaScript."""
-        if not self.remote or not self.thread or not self.thread.is_alive() or self.cancelled.is_set():
+        if not self.thread or not self.thread.is_alive() or self.cancelled.is_set():
             raise ValueError('登录页面尚未就绪或已经关闭。')
         if not isinstance(value, dict):
             raise ValueError('无效的登录操作。')
@@ -123,8 +122,7 @@ class BrowserLogin:
         from playwright.sync_api import sync_playwright
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(**({} if self.remote else {'channel': 'msedge'}),
-                                            headless=self.remote, timeout=15000,
+                browser = p.chromium.launch(headless=True, timeout=15000,
                                             **NETWORK.browser_options('idas.uestc.edu.cn'))
                 try:
                     context = browser.new_context(service_workers='block', viewport={'width': 1000, 'height': 760},
@@ -157,8 +155,7 @@ class BrowserLogin:
                     except Exception:
                         # Changed selectors or manual authentication: leave the visible UI available.
                         password = ''
-                    self.update('waiting', '请在下方学校页面完成验证码或二次验证。' if self.remote else
-                                '请在 Edge 中完成登录、验证码或二次验证；完成后会自动获取会话。')
+                    self.update('waiting', '请在下方学校页面完成验证码或二次验证。')
                     deadline = time.monotonic() + 600
                     entered = False
                     last_probe = 0
@@ -166,8 +163,7 @@ class BrowserLogin:
                         if page.is_closed():
                             self.update('cancelled', '登录窗口已关闭，可重新开始。')
                             return
-                        if self.remote:
-                            self.interact(page)
+                        self.interact(page)
                         cookies = context.cookies([ORIGIN, CAS])
                         if (urlsplit(page.url).hostname == 'jzsz.uestc.edu.cn'
                                 and any(c['name'] == 'SESSION' and c['domain'].lstrip('.') == 'jzsz.uestc.edu.cn' for c in cookies)):
@@ -192,8 +188,7 @@ class BrowserLogin:
                                         self.update('cancelled', '已取消登录，会话未保存。')
                                         return
                                     self.store.save_session(snapshot)
-                                    self.update('success', '登录成功，可按页面设置将加密会话保存到此浏览器。' if self.remote else
-                                                '登录成功，Cookie 已自动加密保存；未提交打卡记录。')
+                                    self.update('success', '登录成功，可按页面设置将加密会话保存到此浏览器。')
                                     return
                         page.wait_for_timeout(1000)
                     self.update('cancelled', '已取消登录。' if self.cancelled.is_set() else '登录已超时，请重试。')

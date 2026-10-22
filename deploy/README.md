@@ -1,6 +1,6 @@
 # Docker 与自托管部署
 
-本 fork 基于 `LCX-luo/GoodnightUESTC`。服务端入口为 `server.py`，本机入口仍为 `python app.py`。Docker 使用独立 Chromium，不依赖服务器安装 Edge，也不需要桌面或 VNC。
+本 fork 基于 `LCX-luo/GoodnightUESTC`，只维护 Docker / Web 部署，正式入口为 `server.py`。学校登录使用独立 Chromium，不需要服务器桌面或 VNC；成员只需访问网页。
 
 ## 架构与保存范围
 
@@ -96,7 +96,7 @@ chmod 600 .env deploy/team-users.caddy
 python3 -c 'import secrets; print(secrets.token_hex(32))'
 ```
 
-将输出填入 `GATEWAY_SECRET`，不要复用学校密码。`BACKEND_IMAGE` 建议使用提交号或发布版本，例如 `goodnightuestc-web:release-1`。`.env` 和正式用户文件已在 `.gitignore` 中；Docker 构建上下文采用白名单，不包含这些文件、旧会话、离线模拟数据库、截图或 Android 安装包。
+将输出填入 `GATEWAY_SECRET`，不要复用学校密码。`BACKEND_IMAGE` 建议使用提交号或发布版本，例如 `goodnightuestc-web:release-1`。`.env` 和正式用户文件已在 `.gitignore` 中；Docker 构建上下文采用白名单，不包含这些文件、测试文件、离线模拟数据库或截图。
 
 为每名成员生成独立的网关密码哈希，命令会在终端交互式提示输入密码：
 
@@ -335,8 +335,8 @@ docker compose start
 
 ## 测试范围
 
-运行 `python -m unittest discover -s tests -v` 可执行合成测试，覆盖多用户隔离、确认令牌、网关与 CSRF、到期清理、限速和原有单次提交防重复行为。`tests/hosted_ui_smoke.py` 使用模拟学校页面检查容器版界面交互，不访问真实学校。Windows 原有 UI 冒烟测试仍为 `tests/ui_smoke.py`。
+运行 `python -m unittest discover -s tests -v` 可执行合成测试，覆盖多用户隔离、确认令牌、网关与 CSRF、到期清理、限速和单次提交防重复行为。`tests/hosted_ui_smoke.py` 使用模拟学校页面检查多用户远程登录、地图选点、模拟确认提交、离线自检和手机布局，不访问真实学校。界面测试默认使用 Playwright Chromium，安装与运行命令见主 [README](../README.md#开发与测试)。
 
-本机装有 Caddy 时，可运行 `python tests/gateway_smoke.py`（或用 `CADDY_BIN` 指定可执行文件），通过回环 HTTP 连接和合成账号验证网关 401、登录后放行及覆盖伪造身份头。它使用临时配置和数据，不申请公网证书。`.github/workflows/docker.yml` 另行负责 Linux 镜像构建、非 root 只读容器启动、健康检查和容器内 Chromium 截图验证，所有步骤均不请求学校服务。
+本机装有 Caddy 时，可运行 `python tests/gateway_smoke.py`（或用 `CADDY_BIN` 指定可执行文件），通过回环 HTTP 连接和合成账号验证网关 401、登录后放行及覆盖伪造身份头。它使用临时配置和数据，不申请公网证书。唯一 CI `.github/workflows/docker.yml` 负责合成单元测试、Linux 镜像构建、非 root 只读容器启动、健康检查、容器内 Chromium 截图和两个托管界面测试；测试文件仅以只读挂载加入，所有步骤均不请求学校服务。
 
-离线模拟器已保留在源码中，Docker 镜像不包含或启动它。此部署没有新增定时提交任务。合成测试和模拟页面通过不代表真实学校 API 提交成功；容器实测、证书签发和学校本人登录需分别核验。新增 `tests/session_ui_smoke.py` 使用合成快照验证浏览器保存、工作台清理／后端重启后的恢复、存储降级与清除；不请求真实学校服务。Firefox / Safari 尚需在目标设备验收，不能将 Edge 模拟故障的结果表述为这些浏览器的实测。
+离线模拟器保留在源码中，Docker 镜像不包含或启动它。此部署没有新增定时提交任务。合成测试和模拟页面通过不代表真实学校 API 提交成功；容器实测、证书签发和学校本人登录需分别核验。`tests/session_ui_smoke.py` 使用合成快照验证浏览器保存、工作台清理／后端重启后的恢复、存储降级与清除；不请求真实学校服务。Firefox / Safari 尚需在目标设备验收，不能将单一浏览器模拟故障的结果表述为其他浏览器的实测。

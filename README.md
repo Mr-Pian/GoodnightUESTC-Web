@@ -1,206 +1,168 @@
-# 晚安成电 · 测试组 Web 与本机签到
+# 晚安成电 · 测试组 Web
 
-此仓库是 [`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) 的 fork，当前开发仓库为 [`Mr-Pian/GoodnightUESTC-Web`](https://github.com/Mr-Pian/GoodnightUESTC-Web)。新增的 Docker 服务端提供独立用户会话、远程学校登录页面，以及 HTTPS 和测试组入口认证；浏览器可保存加密学校会话包，后端按需恢复到独立内存；服务器持久卷仅保存加密密钥、恢复许可元数据及最小提交尝试日志。部署步骤、配置、更新与回滚见 **[Docker 与自托管部署](deploy/README.md)**。
+此仓库是 [`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) 的 fork，当前开发仓库为 [`Mr-Pian/GoodnightUESTC-Web`](https://github.com/Mr-Pian/GoodnightUESTC-Web)。本分支只维护 Docker / Web 部署：成员通过浏览器使用，服务器负责独立学校登录、请求代发、提交前检查和学校记录回读。正式入口为 `server.py`。
 
-已有 Nginx 的服务器可参考 [Nginx 反向代理与端口配置](deploy/README.md#nginx)。Docker 模式默认在当前浏览器记住登录，优先使用 IndexedDB，失败时回退 localStorage；加密包最多保留 7 天，学校会话失效时需重登。服务器工作台仍按空闲 30 分钟／创建满 8 小时清理，但可从浏览器恢复。架构、兼容性、资源占用和次日登录规则见 [登录状态与有效期](deploy/README.md#sessions)。
+学校会话默认以加密包保存在用户浏览器，后端按需恢复到独立内存。服务器持久卷保存加密密钥、恢复许可元数据和最小提交尝试日志，不保存学校密码或学校 Cookie 快照数据库。
 
-下文的 Edge、加密本地文件和 `127.0.0.1` 说明适用于原有本机运行模式；Docker 模式以部署说明为准。
+## 部署入口
 
-一个在本机运行的签到工具，提供 Windows 版和独立 Android 手机版：登录本人学校账号，在地图上选择实际位置，确认后向学校签到，再回读学校记录核对结果。
+准备可访问学校官方服务的 Linux 服务器、Docker Engine、Compose v2 和专用域名。完整配置、HTTPS、成员访问控制、更新与回滚见 **[Docker 与自托管部署](deploy/README.md)**。
 
-本机版本不需要服务器、Docker、Node.js、数据库安装或地图 API Key。Windows 版密码不落盘、Cookie 在本机加密保存；Android 版通过官方网页登录，会话保存在手机应用中。
+- **使用项目自带 Caddy：** 按[首次部署](deploy/README.md#首次部署)配置 `.env`、每成员入口账号并构建启动。
+- **使用现有宿主机 Nginx：** 按 [Nginx 反向代理与端口配置](deploy/README.md#nginx)运行后端容器；该文档包含 HTTPS、Basic Auth、身份头覆盖、限速、超时和日志设置示例。
+- 公网开放 TCP **80 / 443**；Caddy 的 UDP 443 为可选 HTTP/3 端口。容器 **8090 不向公网开放**。Nginx 方案仅将后端映射到宿主机 `127.0.0.1:18090`。
 
-**手机用户：** [下载 Android 安装包](downloads/GoodnightUESTC-Android.apk) · [Android 完整使用和编译说明](android/README.md)。Android 8.0+，手机独立运行，不需要电脑开机。当前为测试版，先使用“在线检查 / 只读预检查”确认流程。
-
-## 免责声明
-
-本工具仅供本人账号及学校允许的用途使用。请遵守学校管理规定，按本人实际位置签到；不得用于代签、伪造位置、批量操作他人账号或绕过学校验证。
-
-点击最终确认会向学校提交真实签到记录，请自行核对内容及学校最终记录。本工具不保证持续可用或签到成功。密码不落盘，登录后仅保留在当前页面输入框；Cookie 在本机加密保存。请勿共用设备会话，或将私人数据上传到 GitHub、聊天或公开渠道。
-
-## 快速开始
-
-### 源码运行
-
-只需要 **Python 3.10+** 和 **Microsoft Edge**。拉取本仓库后双击 `start.cmd`。
-
-```powershell
-git clone https://github.com/Mr-Pian/GoodnightUESTC-Web.git GoodNightUESTC
-cd GoodNightUESTC
-.\start.cmd
-```
-
-首次启动会自动创建独立 `.venv` 并安装四个直接依赖，随后自动打开 http://127.0.0.1:8090/ 。首次安装需要联网，后续启动复用环境。保持启动窗口运行；关闭窗口即停止本机服务。不要在公共电脑上保存会话。
-
-也可手动运行：
-
-```powershell
-python bootstrap.py
-```
-
-首次安装后，项目使用自己的 `.venv`，不依赖其他项目的环境。
-
-### 无 Python 的用户
-
-维护者可分发 `GoodNightUESTC-Windows.zip`。用户解压整个目录，双击 `GoodNightUESTC.exe`；保留同目录的 `_internal` 文件夹。只需系统已有 Edge，不必安装 Python 或 pip 依赖。
-
-本仓库提供 `build-windows.cmd` 和 GitHub Actions 构建流程，构建包默认不包含任何私人数据。可执行文件未经代码签名，Windows 可能提示未知发布者。当前仅验证 Windows，不宣称其他系统可直接运行。
+测试组入口认证与学校认证相互独立。所有成员必须先通过入口认证；仅靠不传播链接不能限制访问。后端采用单进程、单副本、多线程模式，不支持直接增加多个 WSGI worker 或后端副本。
 
 ## 使用流程
 
-1. 在本机页面输入本人学号和学校统一认证密码，点击“用 Edge 登录并导入”。
-2. 独立 Edge 窗口会自动填写官方登录页；本人按学校提示完成验证码、短信或二次验证。程序自动进入智慧学工、验证会话，随后加密保存 Cookie 并关闭窗口。不需要手动寻找 Cookie。
-3. 在地图上点击本人实际位置，或输入经纬度，点击“保存位置”。名称用于本地辨认；确认地址从学校接口查询。
-4. 点击“预检查并确认签到”。程序先查询当天记录、允许时段、位置范围和地址；不符合条件时停止，不发送签到。
-5. 核对弹窗中的日期、地址、GCJ-02 坐标和时段，勾选本人实际在场的确认项，再点击“确认并提交签到”。
-6. 程序发送一次签到请求，并回读学校当天记录。只有读到当天正常 `CHECKED_IN` 才显示“签到已确认”。
+1. 访问测试组的 HTTPS 站点，通过自己的入口账号认证。
+2. 在页面输入本人学号和学校统一认证密码，点击“打开学校登录页面”。密码框在发起登录后清空。
+3. 学校登录在服务器的独立 Chromium context 中进行，页面显示其交互画面。本人按学校提示完成验证码、短信或二次验证；学校会话验证成功后关闭 Chromium。
+4. 默认开启“在此浏览器记住学校登录”。保存成功后可跨页面和后端重启恢复；共用设备请关闭，并在使用后清除学校会话。
+5. 在地图选择本人实际位置，或输入经纬度，点击“保存位置”。位置只保存在当前服务器工作台，工作台重建后需要重新选择。
+6. 点击“预检查并确认签到”。程序查询当天记录、允许时段、位置范围和地址；条件不满足时停止。
+7. 核对弹窗中的日期、地址、GCJ-02 坐标和时段，勾选本人实际在场的确认项，再点击“确认并提交签到”。
+8. 程序发送一次签到请求，并回读学校当天记录。只有读到当天正常 `CHECKED_IN` 才显示“签到已确认”。
 
-程序不会绕过学校 MFA，不会自动提交报告，也没有无人值守每日计划。学校要求重新认证时需本人重新登录。签到成功与否由学校系统判定；自动化测试使用合成数据和 mock，不能作为真实学校端提交成功的证明。
+程序不自动完成学校二次验证，也没有无人值守的每日提交计划。学校要求重新认证时需本人重新登录。自动化测试使用合成数据与 mock，其通过不能作为真实学校 API 提交成功的证明。
+
+## 会话架构与有效期
+
+学号、密码、验证码经 HTTPS 发到后端，供本次学校登录使用；学校 Cookie 也由后端在使用时处理。每个工作台有独立的会话、CookieJar、操作锁、进度、CSRF 和确认令牌，不能跨成员共用浏览器 profile 或认证上下文。登录完成后不长期运行学校浏览器。
+
+后端以 AES-256-GCM 加密学校 Cookie、学号、User-Agent 和保存时间，并绑定站点、入口身份与浏览器设备 Cookie。前端优先用 IndexedDB 保存，失败或超时后回退 localStorage。再次打开时，浏览器上传加密包；后端检查绑定、期限和恢复许可，执行一次学校只读验证，然后恢复到隔离内存。恢复不启动 Chromium，不使用学校密码。
+
+| 内容 | 用户浏览器 | 服务器 |
+| --- | --- | --- |
+| 学校密码、验证码 | 输入并经 HTTPS 发送；发起登录后清空页面密码框 | 仅本次登录临时处理，不保存到会话包或业务日志 |
+| 学校 Cookie、学号、User-Agent | 保存加密会话包，不接收明文学校 Cookie | 当前工作台内存中处理，学校请求各使用独立 CookieJar |
+| 工作台和设备标识 | Secure / HttpOnly / SameSite=Strict Cookie | 用于工作台隔离和包的设备绑定 |
+| 实际位置、待确认操作 | 页面显示当前选择 | 当前工作台内存，不放入会话包 |
+| 防重复与恢复许可 | 不负责全局防重复 | 持久卷中的最小日志、许可元数据与加密密钥 |
+
+今天登录、明天用同一浏览器打开，默认会尝试自动恢复，但有效期由以下条件共同决定：
+
+- 加密包默认从首次签发最多 **7 天**。恢复、轮询和学校 Cookie 更新不延长此期限；重新完成学校登录才签发新期限。
+- 服务器工作台默认 **空闲 30 分钟**或**创建满 8 小时**后清理；仍有效的浏览器包可重新恢复。前台状态轮询算作活动。
+- 学校 Cookie 到期、学校服务端策略或学校主动撤销可以让会话提前失效，此时需重登。
+- 清理站点数据、结束无痕会话、更换浏览器／设备／域名、丢失服务器密钥或恢复许可后，可能无法恢复。
+
+“清除学校会话与本机保存”会清除当前学校内存、本机包并撤销设备恢复许可；取消记住登录会撤销保存，但当前内存工作台仍可继续使用。两者均不删除当天防重复日志，也不注销学校其他设备或浏览器缓存的入口认证。
+
+浏览器每包最多 64 KiB，默认每站点最多保存 8 个入口身份；服务端默认最多 64 个工作台、每用户 8 个、并行登录浏览器 2 个。Chrome / Edge / Firefox / Safari 所需存储接口均有支持，但隐私设置与自动清理策略可能阻止保存；页面会显示实际保存结果。学校失效与网络超时分别处理，网络故障不会直接删除本机包。详细限制见[登录状态与有效期](deploy/README.md#sessions)及部署文档中的兼容性、资源占用说明。
+
+## 数据卷与重复提交
+
+Docker 的 `attempts` 卷包含：
+
+| 文件 | 用途 |
+| --- | --- |
+| `attempts.sqlite3` | 学号哈希、业务日期、提交尝试结果与时间，用于跨工作台和重启防重复 POST |
+| `session-package.key` | 会话包加密密钥，首次启动生成，必须保留并保护 |
+| `session-packages.sqlite3` | 恢复许可、入口身份和设备的 HMAC 标识、签发与到期时间 |
+
+同一账号同一天最多允许一次进入发送阶段的尝试，限制覆盖不同浏览器、不同入口账号和后端重启。学校当天已有签到、报告或豁免记录时跳过提交。发送前先在 SQLite 中争抢唯一记录，网络超时、学校拒绝或结果不明后均不自动释放重发机会；后续只复查记录。不要通过删除卷或日志解除该限制。
+
+确认令牌仅用于当前工作台、账号、位置和当天，120 秒内有效且只能消费一次；提交还要求本人实际位置确认、操作互斥、时段和围栏检查。接口返回成功本身不等于已确认签到，以学校记录回读为准。
+
+日常更新保留整个数据卷及旧镜像；不要使用 `docker compose down -v`。服务器与 HTTPS 终止代理都必须可信，日志不得记录密码、Cookie、token 或请求正文。卷、备份、浏览器加密包也不应上传到 Git 或公开渠道。完整备份与回滚步骤见[部署文档](deploy/README.md#更新回滚和成员维护)。
 
 ## 地图与坐标
 
-使用 Leaflet 1.9.4 和 OpenStreetMap 底图，显示署名，正常使用浏览器缓存，不批量下载瓦片。
+使用 Leaflet 1.9.4 与 OpenStreetMap 底图，保留署名，正常使用浏览器缓存，不批量下载瓦片。
 
-- 默认查看沙河校区，右上角可切换沙河与清水河；切换视图不会修改已保存的位置。
-- 鼠标位于地图内时，滚轮缩放地图；地图外滚轮正常滚动页面。
-- 地图 / GPS：WGS-84，点击地图后自动选择此坐标系。
-- 高德：GCJ-02，手动输入时选择 GCJ-02。
-- 学校接口使用 GCJ-02：WGS-84 做离线近似转换，GCJ-02 原样使用。GCJ-02 在 OSM 上展示时做近似反算。
-- 地图加载需要联网；底图不可用时仍能手动输入坐标。
-- 选点是用户配置，不代表实时 GPS。请求里的定位精度、定位耗时均为 0，网络类型标为 unknown，不伪称设备测量数据。
+- 默认查看沙河校区，右上角可切换沙河与清水河；切换视图不会修改已保存位置。
+- 地图内滚轮缩放地图，地图外滚轮正常滚动页面。
+- 地图 / GPS 使用 WGS-84，点击地图自动选择此坐标系；高德坐标应选择 GCJ-02。
+- 学校接口使用 GCJ-02：WGS-84 做离线近似转换，GCJ-02 原样使用；GCJ-02 在 OSM 展示时做近似反算。
+- 底图不可用时仍可手动输入坐标。选点是用户配置，不代表实时 GPS；请求中的定位精度、定位耗时为 0，网络类型标为 unknown。
 
-## 不上传打卡记录的测试
+## 不创建学校记录的检查
 
-### 定时器离线模拟版
-
-仓库附带 `scheduler_simulation.py`，用于先验证固定测试点、每日定时、进程常驻和本机防重复逻辑。它是独立的离线脚本，不导入签到模块或学校网络客户端；数据只写入 `private-data/simulation.sqlite3`，记录会标记为 `LOCAL_SIMULATION_ONLY`，**不会创建学校签到记录**。默认按运行机器的本地时区每天 21:30 触发，进程需要保持运行。
-
-```sh
-python scheduler_simulation.py --latitude 0 --longitude 0 --label "synthetic test point"
-```
-
-快速写入一条当天的本地模拟记录：
-
-```sh
-python scheduler_simulation.py --latitude 0 --longitude 0 --simulate-now
-```
-
-改用其他时间、查看记录或只检查一次当前时间：
-
-```sh
-python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15
-python scheduler_simulation.py --show
-python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15 --check-once
-```
-
-模拟器每天最多写一条本机记录；重复启动也不会在同一天重复写入。这里的坐标只是测试数据，不能作为已到场或学校签到成功的证明。
-
-页面保留两个独立测试按钮，均不调用签到接口：
-
-| 测试 | 访问学校 | 创建签到记录 |
+| 操作 | 访问学校 | 创建签到记录 |
 | --- | --- | --- |
 | 离线自检 | 否 | 否 |
 | 在线只读检查 | 是，只允许固定 GET 路径 | 否 |
 | 预检查并打开确认弹窗 | 是，只查询条件和地址 | 否 |
 | 弹窗内“确认并提交签到” | 是 | 尝试创建，随后回读核验 |
 
-**想测试而不上传记录，只运行前两个测试，或在确认弹窗中取消。**
+离线自检包含坐标转换和诊断传输层写入拦截，结果显示 `schoolRequests: 0`、`schoolWrites: 0`、`submitted: false`。在线只读检查不创建或修改签到记录，学校仍可能记录访问日志。测试时可停在预检查弹窗并取消。
 
-离线自检检查坐标转换和诊断传输层的写入拦截，结果包含 `schoolRequests: 0`、`schoolWrites: 0`、`submitted: false`。在线只读检查显示学校当天已有记录、时段与所选位置是否在范围内；学校可能记录访问日志，但此操作不创建或修改签到记录。
+`ReadOnlyTransport` 禁止业务 POST；实际签到的 `SubmissionTransport` 只允许精确签到路径的一次 POST。学校登录页面允许认证请求，仍禁止智慧学工业务写入。
 
-`ReadOnlyTransport` 始终禁止业务 POST。实际签到使用单独的 `SubmissionTransport`，仅允许精确的签到路径、一次 POST，且只能在服务端确认令牌、本人位置确认、时段和围栏检查通过后使用。登录窗口允许学校认证请求，但不允许智慧学工业务写入。
+## 开发与测试
 
-### 自动测试
+开发验证使用 **Python 3.12**，与 Docker 镜像一致：
 
-```powershell
-.\test.cmd
+```sh
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
 ```
 
-现有合成数据测试覆盖：Cookie 加密、自动导入、取消登录、CSRF、只读请求拦截、坐标转换、确认令牌过期/重复使用、位置变更、围栏和时段限制、重复提交保护、提交后的记录回读，以及超时后的恢复。没有真实学校凭据，没有真实签到请求。
+合成测试覆盖学校会话验证、登录取消、多用户隔离、网关与 CSRF、限速、工作台到期、加密包和设备绑定、确认令牌、坐标与围栏、重复提交、超时与学校记录回读。离线模拟器的日期防重复测试也保留。
 
-另有离线调度器测试，验证到点触发、日期防重复和模拟记录标记。
+托管界面冒烟测试默认使用 Playwright Chromium：
 
-额外的 Edge 测试：
-
-```powershell
-.\.venv\Scripts\python.exe tests\ui_smoke.py
-.\.venv\Scripts\python.exe tests\login_ui_contract.py
-.\.venv\Scripts\python.exe app.py --self-test
+```sh
+python -m playwright install --with-deps chromium
+python tests/hosted_ui_smoke.py
+python tests/session_ui_smoke.py
 ```
 
-- UI 测试在临时目录完成地图选点、保存、离线自检、模拟确认签到、刷新和手机布局检查；学校提交函数被模拟。
-- 登录页测试只读取学校公开表单，阻断所有 POST，不输入账号密码。
-- 运行时自检仅使用合成加密数据和空白 Edge 页面，可用于验证打包文件：`GoodNightUESTC.exe --self-test`。
+`hosted_ui_smoke.py` 检查隔离用户、远程登录画面与输入、密码清空、地图选点、模拟确认提交、离线自检和手机布局。`session_ui_smoke.py` 检查浏览器保存、后端重启／工作台清理后的恢复、存储降级与清除。两者拦截外部页面请求，学校操作均使用合成快照或 mock，不访问真实学校。开发时可用 `TEST_BROWSER_CHANNEL` 指定已安装的兼容浏览器通道；这不影响生产容器使用 Chromium。
 
-这些检查不能代替本人账号的 MFA 和真实学校端验证。
+`tests/gateway_smoke.py` 可配合本机 Caddy（或 `CADDY_BIN`）验证入口认证及伪造身份头覆盖。`tests/login_ui_contract.py` 是单独手动运行的学校公开登录表单兼容检查：只读取公开页、阻断 POST，不输入凭据；不属于离线测试或 CI。
 
-## 重复提交与结果不明
+唯一 CI 为 `.github/workflows/docker.yml`，验证合成单元测试、Compose、镜像、网关配置、容器健康、非认证拦截、Chromium 和两个托管界面流程。生产镜像不包含测试文件，CI 以只读挂载方式运行界面测试。
 
-每个账号每天的提交尝试会在发送前写入 `private-data/attempts.sqlite3`。当天有学校记录时不重复提交；本机当天已有提交尝试时只复查，不再 POST。请求超时、断线或进程重启后，先用“在线只读检查”核对学校记录，不自动重发。
+## 独立离线模拟器
 
-界面中的“签到已确认”来自学校记录回读；接口返回成功本身不等于已确认签到。学校明确拒绝时显示业务码；不把请求不明当作成功。
+`scheduler_simulation.py` 用于验证每日触发、进程常驻与本地防重复；它不导入学校客户端，不连接学校，不创建学校签到记录，也不在 Docker 镜像中启动。默认按运行机器本地时区每天 21:30 触发，需要保持进程运行；记录写入 `private-data/simulation.sqlite3` 并标记 `LOCAL_SIMULATION_ONLY`。
 
-## 私有数据
+```sh
+# 持续运行，或立即写入当天一条模拟记录。
+python scheduler_simulation.py --latitude 0 --longitude 0 --label "synthetic test point"
+python scheduler_simulation.py --latitude 0 --longitude 0 --simulate-now
 
-源码运行的数据位于项目 `private-data/`；可执行版本的数据位于 exe 同目录的 `private-data/`。
-
-- `session.enc`：AES-GCM 加密的 Cookie、浏览器标识及账号。
-- `dashboard.key`：本机加密密钥，不要与数据库/会话一起分享。
-- `location.json`：用户选择的位置。
-- `attempts.sqlite3`：本机按账号哈希与业务日期保存的提交尝试。
-
-密码只在本次登录过程中使用，不写入配置或日志。本机模式保留页面密码输入框供用户自行编辑；Docker 模式发起登录后会清空该输入框。网页不返回 Cookie 原文。“清除本机会话”不会清除当天防重复记录，也不会影响你日常 Edge 的登录。
-
-`.gitignore` 排除了私人数据、虚拟环境、日志和构建产物。不要手动把这些资料添加到 Git。服务只监听 `127.0.0.1:8090`，有 Host、Origin 和 CSRF 检查，不对公网开放。
-
-## 构建与维护
-
-双击 `build-windows.cmd`，或：
-
-```powershell
-python bootstrap.py --install-only
-.\.venv\Scripts\python.exe -m pip install "pyinstaller>=6.0,<7"
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm GoodNightUESTC.spec
+# 修改时间、只检查一次、查看模拟记录。
+python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15
+python scheduler_simulation.py --latitude 0 --longitude 0 --daily-at 22:15 --check-once
+python scheduler_simulation.py --show
 ```
 
-产物为 `dist/GoodNightUESTC/`。分发时压缩整个文件夹；不要打包运行后生成的 `private-data/`。GitHub Actions 会运行合成测试并上传 Windows 构建产物，不读取学校账号或部署凭据。
+这些坐标与记录仅为测试数据，不能作为已到场或学校签到成功的证明。
 
-项目结构：
+## 项目结构
 
 ```text
-app.py                  本机服务、CSRF 与确认令牌
-server.py               Docker 服务端入口，单进程多线程
-hosted.py               独立内存会话、生命周期与限速
-session_packages.py     浏览器会话包加密、设备绑定与恢复许可
-static/session-*.js     浏览器保存、存储降级与按需恢复
-Dockerfile / compose.yaml 容器构建和自托管服务
-deploy/                 HTTPS 网关与部署说明
-browser_login.py        Edge 登录和 Cookie 自动导入
-core.py                 加密存储、坐标转换、只读诊断
-checkin.py              手动提交、按日防重复和记录回读
-network.py              直连/代理自动探测与安全切换
-progress.py             操作阶段和等待时间
-bootstrap.py            首次自动安装与启动
-static/                 中文界面、地图和确认弹窗
-tests/                  合成测试与 Edge 页面测试
-scheduler_simulation.py 离线定时模拟器，不连接学校服务
-vendor/moonuestc/       复用的上游协议/坐标/加密模块
+server.py                正式入口，单进程多线程 Waitress
+app.py                   Web API、网关校验、CSRF 与确认令牌
+hosted.py                独立内存工作台、生命周期与限速
+session_packages.py      会话包加密、设备绑定与恢复许可
+browser_login.py         服务器 Chromium 登录和会话导入
+core.py                  学校会话验证、坐标转换与只读诊断
+checkin.py               单次提交、按日防重复与学校记录回读
+network.py / progress.py 网络路线、超时与操作进度
+static/                  Web 界面、地图、远程登录和浏览器保存
+Dockerfile / compose.yaml 容器构建与自托管服务
+deploy/                  HTTPS 网关、Nginx 示例与部署说明
+tests/                   合成测试与 Web 界面测试
+scheduler_simulation.py  独立离线模拟器，不连接学校
+vendor/moonuestc/        复用的协议、坐标与传输模块
 ```
 
-## 来源与许可
+学校请求默认由容器直连；如需出口代理，按部署文档显式配置。只读请求可在网络失败后切换路线，真实签到 POST 不自动重发。页面显示操作阶段和已用时间，结果不明时应先只读核对。
 
-本项目采用 MIT 许可。复用的上游模块保留原始许可和第三方声明；未包含上游的后台管理平台、CLI 或每日调度器。
+## 使用边界与许可
 
-- [MoonUESTC v0.5.1](https://github.com/horoscope963852/MoonUESTC)：学校协议、坐标与加密模块；许可见 `vendor/MoonUESTC-LICENSE`。
-- [Playwright](https://playwright.dev/python/docs/browsers)：复用本机 Edge，无需下载另一套浏览器。
-- [Leaflet](https://leafletjs.com/)：地图交互，许可见 `static/vendor/Leaflet-LICENSE`。
+本工具仅供本人账号及学校允许的用途使用。请遵守学校管理规定，按本人实际位置签到；不得用于代签、伪造位置、批量操作他人账号或绕过学校验证。最终确认会向学校提交真实记录，请自行核对内容及学校最终记录。本工具不保证持续可用或签到成功。
+
+本项目采用 MIT 许可，复用模块保留原始许可和第三方声明；未包含上游的后台管理平台、CLI 或每日调度器。
+
+- [MoonUESTC v0.5.1](https://github.com/horoscope963852/MoonUESTC)：协议、坐标与传输模块；许可见 [vendor/MoonUESTC-LICENSE](vendor/MoonUESTC-LICENSE)。
+- [Playwright](https://playwright.dev/python/docs/browsers)：服务器独立 Chromium 登录与合成界面测试。
+- [Leaflet](https://leafletjs.com/)：地图交互，许可见 [static/vendor/Leaflet-LICENSE](static/vendor/Leaflet-LICENSE)。
 - [OpenStreetMap](https://www.openstreetmap.org/copyright)：地图底图。
-
-
-## 连接速度与进度
-
-学校请求和独立登录窗口默认自动选择路线：没有系统代理时直接连接；检测到代理时，优先快速直连并在必要时并行探测代理，缓存可用路线。系统代理开关或地址变化后重新选择。只读请求遇到网络失败可切换路线，真实签到 POST 永不自动重发。工具不会修改系统代理设置。可选地设置 `UESTC_NETWORK_MODE=direct` 或 `UESTC_NETWORK_MODE=system` 固定路线；旧的 `UESTC_USE_SYSTEM_PROXY=1` 仍兼容。
-
-登录验证只读取一次学校记录；正常会话不再重复进入业务入口。确认签到复用已确认的地址，仍保留提交前的当天记录、位置范围和时段校验。页面显示具体阶段和已用时间。结果不明时只复查，不自动重发。
-
-

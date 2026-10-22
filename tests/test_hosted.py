@@ -11,11 +11,7 @@ from browser_login import BrowserLogin
 from core import ReadOnlyTransport, ToolError
 from hosted import HostedSettings, MemoryStore, WorkspaceRegistry
 from session_packages import DEVICE_COOKIE
-from test_readonly import SNAPSHOT, POINT
-from test_checkin import INSTANT, DAY
-
-BASE = 'https://team.example.com'
-GATEWAY = {'X-Team-Gateway': 'a'*64, 'X-Team-User': 'alice'}
+from web_support import SNAPSHOT, POINT, INSTANT, DAY, BASE, GATEWAY
 
 
 class HostedTests(unittest.TestCase):
@@ -306,10 +302,10 @@ class ResourceTests(unittest.TestCase):
 
     def test_login_slots_are_bounded_and_released_on_failure(self):
         slots = threading.BoundedSemaphore(1)
-        login = BrowserLogin(MemoryStore(), remote=True, slots=slots)
+        login = BrowserLogin(MemoryStore(), slots=slots)
         with patch('threading.Thread.start'):
             login.start(SNAPSHOT['student_id'], 'synthetic')
-            other = BrowserLogin(MemoryStore(), remote=True, slots=slots)
+            other = BrowserLogin(MemoryStore(), slots=slots)
             with self.assertRaises(RuntimeError):
                 other.start(SNAPSHOT['student_id'], 'synthetic')
         with patch('playwright.sync_api.sync_playwright', side_effect=RuntimeError('synthetic')):
@@ -318,7 +314,7 @@ class ResourceTests(unittest.TestCase):
         slots.release()
 
     def test_remote_input_rejects_code_urls_and_out_of_bounds_coordinates(self):
-        login = BrowserLogin(MemoryStore(), remote=True)
+        login = BrowserLogin(MemoryStore())
         login.thread = MagicMock()
         for action in ({'kind': 'eval', 'text': 'document.cookie'}, {'kind': 'goto', 'url': BASE},
                        {'kind': 'click', 'x': 1000, 'y': 0}, {'kind': 'click', 'x': float('nan'), 'y': 0},
@@ -336,7 +332,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_remote_login_uses_new_headless_context_and_saves_only_verified_cookie(self):
         store = MemoryStore()
-        login = BrowserLogin(store, remote=True)
+        login = BrowserLogin(store)
         with patch('playwright.sync_api.sync_playwright') as playwright, \
                 patch('browser_login.NETWORK.browser_options', return_value={}), \
                 patch('browser_login.verify_session') as verify:

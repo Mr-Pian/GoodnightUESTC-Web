@@ -65,6 +65,10 @@ jobs:
                   browser.close()
           print('Container health, gateway requirement, Chromium and screenshot: PASS; school requests=0')
           PY
+      - name: Check Web browser flows with synthetic school data
+        run: |
+          docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/hosted_ui_smoke.py
+          docker compose run --rm --no-deps --volume "$PWD/tests:/app/tests:ro" backend python tests/session_ui_smoke.py
       - name: Clean up
         if: always()
         run: docker compose down -v

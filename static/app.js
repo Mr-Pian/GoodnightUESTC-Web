@@ -2,7 +2,6 @@
 const $ = id => document.getElementById(id);
 let csrf = '', map, marker, savedLocation = null, loginBusy = false, confirmation = '', submitting = false, testing = false, operationBusy = false;
 let refreshInFlight = false;
-let hostedMode = false;
 const liveProgress=document.createElement('p');liveProgress.id='checkin-progress';liveProgress.className='live-progress';liveProgress.hidden=true;liveProgress.setAttribute('role','status');$('checkin-error').before(liveProgress);
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toast.timer); toast.timer=setTimeout(()=>$('toast').hidden=true,5000); }
 async function api(path, data) {
@@ -35,10 +34,10 @@ async function refresh(){
   if(refreshInFlight)return;refreshInFlight=true;try{
   const r=await api('/api/status');
   if(csrf&&csrf!==r.csrf){confirmation='';savedLocation=null;refresh.initialized=false;for(const id of ['latitude','longitude','place-name'])$(id).value='';if(marker){marker.remove();marker=null;}if(!submitting)$('checkin-dialog').close();toast('工作台已更新，请确认学校登录并重新选择实际位置。');}
-  csrf=r.csrf;hostedMode=Boolean(r.hosted);
+  csrf=r.csrf;
   const active=['opening','waiting','verifying'].includes(r.login.state);loginBusy=active;
   $('login-button').disabled=active;$('cancel-login').hidden=!active;
-  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):hostedMode?'打开学校登录页面 ↗':'用 Edge 登录并导入 ↗';
+  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):'打开学校登录页面 ↗';
   $('session-badge').textContent=r.account?'已保存':active?'登录中':'未登录';$('session-badge').className='badge'+(r.account?' green':'');
   $('account-dot').classList.toggle('active',Boolean(r.account));
   $('account-label').textContent=r.account?`${r.account.student_id} · ${r.account.cookie_count} 个会话 Cookie`:'等待导入学校账号';
@@ -65,11 +64,11 @@ function renderResult(result){
   for(const [label,value] of values){const box=document.createElement('div');box.className='metric';const span=document.createElement('span'),strong=document.createElement('strong');span.textContent=label;strong.textContent=value;box.append(span,strong);$('result-summary').append(box);}
 }
 async function runTest(mode){testing=true;scheduleRefresh();const button=$(mode);const label=button.innerHTML;button.disabled=true;button.textContent=mode==='online'?'正在读取学校记录…':'正在运行离线自检…';try{if(mode==='online'&&dirtyLocation())throw new Error('请先选择并保存实际位置。');const r=await api('/api/test/'+mode,{});renderResult(r.result);}catch(e){toast(e.message);$('result').hidden=false;$('result').classList.add('error');$('result-title').textContent=e.message;$('result-summary').replaceChildren();$('result-json').textContent='未提交任何打卡或报告记录。';$('result-time').textContent='';}finally{testing=false;button.disabled=false;button.innerHTML=label;refresh().catch(()=>{});}}
-$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开登录页面…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent=hostedMode?'打开学校登录页面 ↗':'用 Edge 登录并导入 ↗';}finally{if(hostedMode)$('password').value='';}});
+$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开登录页面…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent='打开学校登录页面 ↗';}finally{$('password').value='';}});
 $('show-password').addEventListener('click',()=>{const hide=$('password').type==='password';$('password').type=hide?'text':'password';$('show-password').textContent=hide?'隐藏':'显示';});
 $('cancel-login').addEventListener('click',async()=>{try{await api('/api/login/cancel',{});toast('已请求取消，窗口稍后关闭。');}catch(e){toast(e.message);}});
 $('forget').addEventListener('click',async()=>{try{await api('/api/session/forget',{});document.dispatchEvent(new CustomEvent('school-session-cleared'));await refresh();toast('学校会话已清除。');}catch(e){toast(e.message);}});
-$('location-form').addEventListener('submit',async e=>{e.preventDefault();try{const r=await api('/api/location',currentLocation());fillLocation(r.location);await refresh();toast(hostedMode?'位置已保存在当前会话。':'位置已保存在本机。');}catch(e){toast(e.message);}});
+$('location-form').addEventListener('submit',async e=>{e.preventDefault();try{const r=await api('/api/location',currentLocation());fillLocation(r.location);await refresh();toast('位置已保存在当前会话。');}catch(e){toast(e.message);}});
 for(const id of ['latitude','longitude','coordinate-system'])$(id).addEventListener('change',()=>{if($('latitude').value&&$('longitude').value){const loc=currentLocation();if(Number.isFinite(loc.latitude)&&Number.isFinite(loc.longitude)&&Math.abs(loc.latitude)<=90&&Math.abs(loc.longitude)<=180){showPoint(loc.latitude,loc.longitude,loc.coordinate_system,true);$('converted').textContent='位置已修改，请保存后运行检查。';}}});
 $('offline').addEventListener('click',()=>runTest('offline'));$('online').addEventListener('click',()=>runTest('online'));
 $('prepare-checkin').addEventListener('click',async()=>{

@@ -41,20 +41,6 @@ $('remote-cancel').addEventListener('click',()=>{$('cancel-login').click();});
 loginDialog.addEventListener('cancel',e=>{e.preventDefault();$('cancel-login').click();});
 document.addEventListener('workspace-status', event => {
   const state=event.detail;
-  if(!state.hosted)return;
-  if(!loginDialog.dataset.ready){
-    loginDialog.dataset.ready='true';document.title='晚安成电 · 测试组工作台';
-    document.querySelector('.brand small').textContent='TEAM WORKSPACE';
-    document.querySelector('.mode').textContent='手动签到 · 测试组专用';
-    document.querySelector('.eyebrow').textContent='你的账号，你的独立会话';
-    document.querySelector('.account-card .section-title p').textContent='学校网页登录 · 本机加密保存，按需恢复';
-    document.querySelector('.account-card .help').textContent='登录后可在页面中完成学校验证码或二次验证。学校密码仅用于本次登录；开启记住登录后，次日会尝试恢复，学校会话失效时需重登。';
-    document.querySelector('.privacy-note p').textContent='开启记住登录后，加密会话包保存在此浏览器；后端按需解密到独立内存。位置需重新确认。服务器会处理学校凭据，请仅在测试组可信服务上登录。';
-    $('forget').textContent='清除学校会话与本机保存';
-    document.querySelector('footer span').textContent='☾ 测试组专用 · HTTPS';
-    const disclaimer=document.querySelector('.disclaimer p');
-    disclaimer.textContent=disclaimer.textContent.replace('账号会话仅在本机保存，请勿共用或上传私人数据。','学校会话可加密保存在此浏览器，使用时由服务器处理；共用设备请关闭记住登录并在结束后清除会话。');
-  }
   remoteActive=['opening','waiting','verifying'].includes(state.login.state);
   if(remoteActive&&!loginDialog.open)loginDialog.showModal();
   if(!remoteActive){loginDialog.close();remoteImage.removeAttribute('src');remoteImage.hidden=true;$('remote-text').value='';}

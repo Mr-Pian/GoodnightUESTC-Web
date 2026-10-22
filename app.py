@@ -1,4 +1,3 @@
-import os
 import base64
 import hashlib
 import json
@@ -10,10 +9,9 @@ from urllib.parse import urlsplit
 from flask import Flask, g, jsonify, request, session, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.local import LocalProxy
-from core import ROOT, DATA_ROOT, LocalStore, ToolError, offline_test, online_test, verify_session, now
-from browser_login import BrowserLogin
+from core import ROOT, ToolError, offline_test, online_test, verify_session, now
 from checkin import Attempts, prepare_checkin, submit_checkin
-from hosted import Workspace, WorkspaceRegistry, RateLimits
+from hosted import WorkspaceRegistry, RateLimits
 from session_packages import DEVICE_COOKIE, PackageError, SessionPackages
 
 MESSAGES = {
@@ -36,24 +34,18 @@ MESSAGES = {
 }
 
 
-def create_app(data_dir=None, *, hosted=None):
+def create_app(data_dir=None, *, hosted):
     app = Flask(__name__, static_folder=str(ROOT / 'static'))
     app.secret_key = secrets.token_bytes(32)
-    app.config.update(MAX_CONTENT_LENGTH=98304 if hosted else 16384, SESSION_COOKIE_HTTPONLY=True,
-                      SESSION_COOKIE_SAMESITE='Strict')
-    if hosted:
-        app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_NAME='__Host-uestc')
-        directory = Path(data_dir or '/data')
-        directory.mkdir(parents=True, exist_ok=True)
-        packages = SessionPackages(directory, hosted)
-        registry, limits = WorkspaceRegistry(hosted), RateLimits()
-        app.extensions['session_packages'] = packages
-        app.extensions.update(workspaces=registry, hosted_settings=hosted)
-    else:
-        local_store = LocalStore(data_dir or DATA_ROOT / 'private-data')
-        workspace = Workspace(local_store, BrowserLogin(local_store))
-        directory = local_store.directory
-        app.extensions.update(local_store=local_store, browser_login=workspace.login)
+    app.config.update(MAX_CONTENT_LENGTH=98304, SESSION_COOKIE_HTTPONLY=True,
+                      SESSION_COOKIE_SAMESITE='Strict', SESSION_COOKIE_SECURE=True,
+                      SESSION_COOKIE_NAME='__Host-uestc')
+    directory = Path(data_dir or '/data')
+    directory.mkdir(parents=True, exist_ok=True)
+    packages = SessionPackages(directory, hosted)
+    registry, limits = WorkspaceRegistry(hosted), RateLimits()
+    app.extensions['session_packages'] = packages
+    app.extensions.update(workspaces=registry, hosted_settings=hosted)
     attempts = Attempts(directory)
     store = LocalProxy(lambda: g.workspace.store)
     login = LocalProxy(lambda: g.workspace.login)
@@ -66,55 +58,48 @@ def create_app(data_dir=None, *, hosted=None):
     def protect():
         if request.path == '/healthz' and request.method in ('GET', 'HEAD'):
             return None
-        if hosted:
-            if request.path != '/api/session/restore' and (request.content_length or 0) > 16384:
-                return jsonify(error='请求内容过大。'), 413
-            owner = request.headers.get('X-Team-User', '')
-            gateway = request.headers.get('X-Team-Gateway', '')
-            if (not secrets.compare_digest(gateway.encode(), hosted.gateway_secret.encode())
-                    or not owner or len(owner) > 128):
-                return jsonify(error='请通过测试组访问入口登录。'), 403
-            if request.host != urlsplit(hosted.public_origin).netloc:
-                return jsonify(error='请求地址不匹配。'), 403
-            categories = [('all', 240, 60)]
-            if request.method == 'POST':
-                categories.append(('input' if request.path == '/api/login/input' else 'write',
-                                   180 if request.path == '/api/login/input' else 30, 60))
-            if request.path == '/api/login' and request.method == 'POST':
-                categories.append(('login', 3, 300))
-            if request.path == '/api/session/restore' and request.method == 'POST':
-                categories.append(('restore', 5, 300))
-            if not all(limits.allow(owner, *category) for category in categories):
-                response = jsonify(error='请求过于频繁，请稍后重试。')
-                response.headers['Retry-After'] = '300' if request.path == '/api/login' else '60'
-                return response, 429
-            sid, g.workspace = registry.acquire(session.get('workspace'), owner)
-            if g.workspace is None:
-                return jsonify(error='工作台数量已达上限，请稍后重试。'), 503
-            if sid != session.get('workspace'):
-                session.clear()
-                session['workspace'] = sid
-            g.owner = owner
-            device = request.cookies.get(DEVICE_COOKIE, '')
-            g.new_device = not re.fullmatch(r'[A-Za-z0-9_-]{43}', device)
-            g.device = secrets.token_urlsafe(32) if g.new_device else device
-            expected = hosted.public_origin
-        else:
-            if request.host not in ('127.0.0.1:8090', 'localhost:8090'):
-                return jsonify(error='仅允许本机访问。'), 403
-            g.workspace = workspace
-            expected = 'http://' + request.host
+        if request.path != '/api/session/restore' and (request.content_length or 0) > 16384:
+            return jsonify(error='请求内容过大。'), 413
+        owner = request.headers.get('X-Team-User', '')
+        gateway = request.headers.get('X-Team-Gateway', '')
+        if (not secrets.compare_digest(gateway.encode(), hosted.gateway_secret.encode())
+                or not owner or len(owner) > 128):
+            return jsonify(error='请通过测试组访问入口登录。'), 403
+        if request.host != urlsplit(hosted.public_origin).netloc:
+            return jsonify(error='请求地址不匹配。'), 403
+        categories = [('all', 240, 60)]
+        if request.method == 'POST':
+            categories.append(('input' if request.path == '/api/login/input' else 'write',
+                               180 if request.path == '/api/login/input' else 30, 60))
+        if request.path == '/api/login' and request.method == 'POST':
+            categories.append(('login', 3, 300))
+        if request.path == '/api/session/restore' and request.method == 'POST':
+            categories.append(('restore', 5, 300))
+        if not all(limits.allow(owner, *category) for category in categories):
+            response = jsonify(error='请求过于频繁，请稍后重试。')
+            response.headers['Retry-After'] = '300' if request.path == '/api/login' else '60'
+            return response, 429
+        sid, g.workspace = registry.acquire(session.get('workspace'), owner)
+        if g.workspace is None:
+            return jsonify(error='工作台数量已达上限，请稍后重试。'), 503
+        if sid != session.get('workspace'):
+            session.clear()
+            session['workspace'] = sid
+        g.owner = owner
+        device = request.cookies.get(DEVICE_COOKIE, '')
+        g.new_device = not re.fullmatch(r'[A-Za-z0-9_-]{43}', device)
+        g.device = secrets.token_urlsafe(32) if g.new_device else device
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
-            if request.headers.get('Origin') != expected:
+            if request.headers.get('Origin') != hosted.public_origin:
                 return jsonify(error='请求来源不匹配，请从工作台页面操作。'), 403
-            token = g.workspace.csrf if hosted else session.get('csrf', '')
+            token = g.workspace.csrf
             if not token or not secrets.compare_digest(request.headers.get('X-CSRF-Token', '').encode(), token.encode()):
                 return jsonify(error='页面会话已更新，请刷新页面。'), 403
 
     @app.teardown_request
     def release_workspace(error):
         entry = g.pop('workspace', None)
-        if hosted and entry:
+        if entry:
             registry.release(entry)
 
     @app.after_request
@@ -125,9 +110,8 @@ def create_app(data_dir=None, *, hosted=None):
             "frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'")
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        if hosted or request.path.startswith('/api/'):
-            response.headers['Cache-Control'] = 'no-store'
-        if hosted and g.get('device') and (g.new_device or g.get('renew_device')):
+        response.headers['Cache-Control'] = 'no-store'
+        if g.get('device') and (g.new_device or g.get('renew_device')):
             response.set_cookie(DEVICE_COOKIE, g.device, max_age=hosted.package_seconds,
                                 secure=True, httponly=True, samesite='Strict', path='/')
         return response
@@ -145,19 +129,18 @@ def create_app(data_dir=None, *, hosted=None):
 
     def school_call(function, snapshot, *args, **kwargs):
         try:
-            if hosted and store.package and not packages.current(store.package, g.owner, g.device):
+            if store.package and not packages.current(store.package, g.owner, g.device):
                 raise ToolError('session_rejected')
             return function(snapshot, *args, **kwargs)
         except ToolError as error:
-            if hosted and error.reason in ('session_rejected', 'portal_session_rejected', 'micro_app_unauthorized'):
+            if error.reason in ('session_rejected', 'portal_session_rejected', 'micro_app_unauthorized'):
                 packages.revoke(g.owner, g.device)
                 store.forget()
                 with pending_lock:
                     pending.clear()
             raise
         finally:
-            if hosted:
-                store.update_session(snapshot)
+            store.update_session(snapshot)
 
     @app.errorhandler(ToolError)
     def school_error(error):
@@ -180,22 +163,18 @@ def create_app(data_dir=None, *, hosted=None):
 
     @app.get('/api/status')
     def status():
-        if not hosted and 'csrf' not in session:
-            session['csrf'] = secrets.token_urlsafe(24)
         saved = store.session()
-        return jsonify(product='GoodNightUESTC', csrf=g.workspace.csrf if hosted else session['csrf'],
-                       mode='manual', hosted=bool(hosted), schoolWritesEnabled=True,
+        return jsonify(product='GoodNightUESTC', csrf=g.workspace.csrf,
+                       mode='manual', hosted=True, schoolWritesEnabled=True,
                        account=({'student_id': saved['student_id'],
                                  'saved_at': saved['saved_at'], 'cookie_count': len(saved['cookies'])} if saved else None),
                        location=store.location(), login=login.status(), operation=operation.snapshot(),
                        persistence=({'owner': packages.tag('owner', g.owner), 'revision': store.revision,
                                      'max_age': hosted.package_seconds,
-                                     'expires_at': store.package['expires'] if store.package else None} if hosted else None))
+                                     'expires_at': store.package['expires'] if store.package else None}))
 
     @app.post('/api/session/package')
     def export_package():
-        if not hosted:
-            return jsonify(error='仅用于服务器模式。'), 404
         if not test_lock.acquire(blocking=False):
             return jsonify(error='正在执行操作，请稍后保存登录。'), 409
         try:
@@ -213,8 +192,6 @@ def create_app(data_dir=None, *, hosted=None):
 
     @app.post('/api/session/restore')
     def restore_package():
-        if not hosted:
-            return jsonify(error='仅用于服务器模式。'), 404
         if not test_lock.acquire(blocking=False):
             return jsonify(error='正在执行操作，请稍后恢复登录。'), 409
         try:
@@ -236,8 +213,6 @@ def create_app(data_dir=None, *, hosted=None):
 
     @app.post('/api/session/package/forget')
     def forget_package():
-        if not hosted:
-            return jsonify(error='仅用于服务器模式。'), 404
         if not test_lock.acquire(blocking=False):
             return jsonify(error='正在执行操作，请稍后清除保存的登录。'), 409
         try:
@@ -268,15 +243,11 @@ def create_app(data_dir=None, *, hosted=None):
 
     @app.get('/api/login/frame')
     def login_frame():
-        if not hosted:
-            return jsonify(error='本机模式请使用独立 Edge 窗口。'), 404
         frame = login.screenshot()
         return jsonify(image='data:image/jpeg;base64,' + base64.b64encode(frame).decode() if frame else None)
 
     @app.post('/api/login/input')
     def login_input():
-        if not hosted:
-            return jsonify(error='本机模式请使用独立 Edge 窗口。'), 404
         try:
             login.command(request.get_json())
         except ValueError as error:
@@ -295,8 +266,7 @@ def create_app(data_dir=None, *, hosted=None):
         try:
             if login.thread and login.thread.is_alive():
                 return jsonify(error='请先取消登录，等待登录窗口关闭后再清除。'), 409
-            if hosted:
-                packages.revoke(g.owner, g.device)
+            packages.revoke(g.owner, g.device)
             store.forget()
             with pending_lock:
                 pending.clear()
@@ -339,7 +309,7 @@ def create_app(data_dir=None, *, hosted=None):
                         pending.pop(key)
                 if len(pending) >= 32:
                     return jsonify(error='待确认操作过多，请稍后重试。'), 429
-                pending[token] = {'owner': g.workspace.csrf if hosted else session['csrf'], 'binding': binding(snapshot, point),
+                pending[token] = {'owner': g.workspace.csrf, 'binding': binding(snapshot, point),
                                   'day': preview['businessDate'],
                                   'address': preview.get('address'),
                                   'expires': time.monotonic()+120}
@@ -364,7 +334,7 @@ def create_app(data_dir=None, *, hosted=None):
                 ticket = pending.pop(data['confirmation'], None)
             if (not ticket or ticket['expires'] < time.monotonic()
                     or ticket['day'] != now().date().isoformat()
-                    or ticket['owner'] != (g.workspace.csrf if hosted else session.get('csrf')) or not snapshot or not point
+                    or ticket['owner'] != g.workspace.csrf or not snapshot or not point
                     or ticket['binding'] != binding(snapshot, point)):
                 return jsonify(error='确认已过期或账号、位置已变化，请重新预检查。', submitted=False), 400
             with operation.operation('checkin'):
@@ -394,23 +364,3 @@ def create_app(data_dir=None, *, hosted=None):
             test_lock.release()
 
     return app
-
-
-if __name__ == '__main__':
-    import sys
-    if '--self-test' in sys.argv:
-        from selftest import run
-        run()
-        raise SystemExit(0)
-    from waitress import create_server
-    import webbrowser
-    server = create_server(create_app(), host='127.0.0.1', port=8090, threads=4)
-    print('晚安成电 · 本机签到 http://127.0.0.1:8090', flush=True)
-    if os.environ.get('UESTC_NO_OPEN') != '1':
-        webbrowser.open('http://127.0.0.1:8090/')
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.close()

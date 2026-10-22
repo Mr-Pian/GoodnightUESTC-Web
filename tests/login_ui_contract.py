@@ -5,9 +5,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright
 from browser_login import LOGIN_URL
 from core import browser_allowed
+from web_support import browser_options
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel='msedge', headless=True)
+    browser = p.chromium.launch(headless=True, **browser_options())
     try:
         context = browser.new_context(service_workers='block')
         context.route('**/*', lambda route: route.continue_() if route.request.method == 'GET'

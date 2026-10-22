@@ -153,7 +153,7 @@ class WorkspaceRegistry:
                     return None, None
                 sid = secrets.token_urlsafe(32)
                 store = MemoryStore()
-                entry = Workspace(store, BrowserLogin(store, remote=True, slots=self.logins))
+                entry = Workspace(store, BrowserLogin(store, slots=self.logins))
                 self.entries[sid] = owner, entry
             else:
                 entry = saved[1]

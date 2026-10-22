@@ -1,4 +1,4 @@
-"""Real Edge UI, synthetic sessions and storage faults; no school network access."""
+"""Browser UI, synthetic sessions and storage faults; no school network access."""
 from copy import deepcopy
 from pathlib import Path
 import sys
@@ -12,7 +12,7 @@ from app import create_app
 from core import ToolError
 from hosted import HostedSettings
 from playwright.sync_api import expect, sync_playwright
-from test_readonly import POINT, SNAPSHOT
+from web_support import POINT, SNAPSHOT, browser_options
 from waitress import create_server
 
 BASE = 'https://team.example.com'
@@ -47,7 +47,7 @@ def main():
     errors, requests = [], []
     with tempfile.TemporaryDirectory() as directory, sync_playwright() as p:
         backend = Backend(directory)
-        browser = p.chromium.launch(channel='msedge', headless=True)
+        browser = p.chromium.launch(headless=True, **browser_options())
         try:
             def context_for(owner, script='', mobile=False):
                 context = browser.new_context(viewport={'width': 390, 'height': 844} if mobile else

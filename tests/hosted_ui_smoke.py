@@ -9,10 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app import create_app
 from browser_login import BrowserLogin
+from core import now
 from hosted import HostedSettings
 from playwright.sync_api import sync_playwright, expect
 from waitress import create_server
-from test_readonly import SNAPSHOT
+from web_support import SNAPSHOT, POINT, browser_options
 
 BASE = 'https://team.example.com'
 SECRET = 'synthetic-gateway-secret-' * 3
@@ -25,8 +26,7 @@ def main():
         server = create_server(app, host='127.0.0.1', port=0, threads=8)
         worker = threading.Thread(target=server.run, daemon=True)
         worker.start()
-        # Override only the test browser binary; production uses bundled Chromium.
-        browser = p.chromium.launch(channel='msedge', headless=True)
+        browser = p.chromium.launch(headless=True, **browser_options())
         try:
             school_context = browser.new_context(viewport={'width': 1000, 'height': 760})
             school_context.route('**/*', lambda route: route.abort())
@@ -108,13 +108,48 @@ def main():
                 expect(page.locator('.remote-login')).not_to_be_visible()
                 expect(page.locator('#account-label')).to_contain_text(SNAPSHOT['student_id'])
                 expect(other.locator('#account-label')).not_to_contain_text(SNAPSHOT['student_id'])
+
+                page.locator('.leaflet-container').wait_for()
+                assert abs(page.evaluate('() => map.getCenter().lat') - 30.6752) < .001
+                page.locator('#campus-qingshuihe').click()
+                expect(page.locator('#campus-qingshuihe')).to_have_attribute('aria-pressed', 'true')
+                page.wait_for_function('Math.abs(map.getCenter().lng - 103.9313) < .001')
+                page.locator('#campus-shahe').click()
+                page.wait_for_function('Math.abs(map.getCenter().lat - 30.6752) < .001')
+                page.locator('#map').click(position={'x': 250, 'y': 160})
+                assert page.locator('#latitude').input_value()
+                expect(page.locator('#coordinate-system')).to_have_value('wgs84')
+                page.locator('#place-name').fill('地图选点测试')
+                page.locator('#save-location').click()
+                expect(page.locator('#converted')).to_contain_text('GCJ-02：')
+                expect(page.locator('#prepare-checkin')).to_be_enabled()
+
                 page.locator('#offline').click()
                 expect(page.locator('#result-title')).to_have_text('离线自检通过')
+                diagnostic = page.locator('#result-json').text_content()
+                assert '"schoolRequests": 0' in diagnostic
+                assert '"schoolWrites": 0' in diagnostic
+
+                preview = {'businessDate': now().date().isoformat(),
+                           'name': POINT['name'], 'address': '合成测试地址',
+                           'latitude': POINT['latitude'], 'longitude': POINT['longitude'],
+                           'window': {'start': '21:00', 'end': '23:30'}}
+                with patch('app.prepare_checkin', return_value=preview), patch(
+                        'app.submit_checkin', return_value={'confirmed': True, 'submitted': True,
+                                                         'result': 'confirmed'}) as submit:
+                    page.locator('#prepare-checkin').click()
+                    expect(page.locator('#checkin-dialog')).to_be_visible()
+                    expect(page.locator('#submit-checkin')).to_be_disabled()
+                    page.locator('#confirm-location').check()
+                    page.locator('#submit-checkin').click()
+                    expect(page.locator('#checkin-state')).to_have_text('签到已确认')
+                    submit.assert_called_once()
                 page.screenshot(path='/tmp/goodnight-hosted-desktop.png', full_page=True)
                 other.screenshot(path='/tmp/goodnight-hosted-mobile.png', full_page=True)
                 assert other.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert not errors, errors
-                print('Hosted UI PASS: isolated users, remote frames/click/text/key, password clearing, offline test, mobile; real school requests=0')
+                print('Hosted UI PASS: isolated users, remote input, password clearing, campus/map selection, '
+                      'offline test, synthetic confirmed submission, mobile; real school requests=0')
         finally:
             browser.close()
             server.close()

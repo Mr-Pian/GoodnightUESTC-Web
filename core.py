@@ -1,23 +1,16 @@
-"""Encrypted local sessions and a strictly read-only diagnostic transport."""
+"""School session validation, coordinates and read-only diagnostic transport."""
 import http.cookiejar
-import json
-import os
 from pathlib import Path
-import ssl
 import sys
-import threading
 import urllib.parse
-import urllib.request
 
-ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
-DATA_ROOT = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else ROOT
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'vendor'))
 from moonuestc.client import School, ORIGIN, CAS
 from moonuestc.coordinates import to_gcj02
 from moonuestc.errors import ToolError, AuthRequired
 from moonuestc.policy import check_fence, now, valid_today, window
 from moonuestc.transport import Transport, NoRedirect
-from moonuestc.vault import Vault
 from network import RoutingOpener
 
 READ_PATHS = frozenset({
@@ -59,42 +52,6 @@ def browser_allowed(method, url):
     if any(s in u.path.lower() for s in ('/checkin-record/checkin', '/report', '/submit', '/save', '/delete')):
         return False
     return True
-
-
-class LocalStore:
-    def __init__(self, directory):
-        self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.vault = Vault(directory)
-        self.lock = threading.RLock()
-
-    def save_session(self, value):
-        with self.lock:
-            target = self.directory / 'session.enc'
-            temp = self.directory / 'session.new'
-            temp.write_bytes(self.vault.seal(value, 'readonly-school-session'))
-            temp.replace(target)
-
-    def session(self):
-        with self.lock:
-            path = self.directory / 'session.enc'
-            return self.vault.open(path.read_bytes(), 'readonly-school-session') if path.exists() else None
-
-    def forget(self):
-        with self.lock:
-            (self.directory / 'session.enc').unlink(missing_ok=True)
-
-    def location(self):
-        path = self.directory / 'location.json'
-        return json.loads(path.read_text('utf-8')) if path.exists() else None
-
-    def save_location(self, value):
-        normalized = normalize_location(value)
-        with self.lock:
-            temp = self.directory / 'location.new'
-            temp.write_text(json.dumps(normalized, ensure_ascii=False), encoding='utf-8')
-            temp.replace(self.directory / 'location.json')
-        return normalized
 
 
 def normalize_location(value):
