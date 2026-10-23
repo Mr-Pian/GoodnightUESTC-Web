@@ -143,7 +143,7 @@ python3 deploy/preflight.py --image-only
 使用 Release 的 Linux amd64 预构建镜像，跳过服务器本地构建：
 
 ```sh
-python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.1.0
 ```
 
 对应镜像必须已成功发布并允许拉取；该模式将镜像引用写入 `.env`，执行 `pull` 与 `up --no-build --wait`。也可组合 `--configure-only` 或 `--proxy-network NAME`。GHCR 首次发布默认访问级别需由维护者确认，未公开时可改用下方源码构建。
@@ -191,7 +191,7 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 - `PUBLIC_ORIGIN`：浏览器实际访问的完整 HTTPS origin，例如 `https://checkin.example.com:60000`。使用小写域名，不含路径、尾部斜线、查询或凭据；当前应用部署在站点根路径，不支持子路径挂载。
 - `GATEWAY_SECRET`：填入生成的随机值，与现有代理配置中的内部密钥一致。不要复用学校密码；无需创建成员文件或网站账号。
 - `BACKEND_PORT`：宿主机代理连接的本地端口，默认 `18090`，仅绑定 `127.0.0.1`。
-- `BACKEND_IMAGE`：本地构建使用唯一标签，例如 `goodnightuestc-web:你的提交号`；发行镜像使用 `ghcr.io/mr-pian/goodnightuestc-web:1.0.5` 或其 digest，保留旧镜像供回滚。不要以 `latest` 作为生产回滚依据。
+- `BACKEND_IMAGE`：本地构建使用唯一标签，例如 `goodnightuestc-web:你的提交号`；发行镜像使用 `ghcr.io/mr-pian/goodnightuestc-web:1.1.0` 或其 digest，保留旧镜像供回滚。不要以 `latest` 作为生产回滚依据。
 - `MAP_PROVIDER` / `TIANDITU_KEY`：模板默认 `tianditu`，必须填自己的天地图地图服务 Key，配置方法见[地图配置与排障](#maps)。需要 OSM 的手动部署可显式改为 `osm`；未设置 provider 的旧配置仍兼容 `auto`。
 
 ```sh

@@ -1,6 +1,6 @@
 # 固定版本 Docker 部署：从命令行到验收
 
-本文以 **v1.0.5 / Linux amd64** 为例。镜像为 `ghcr.io/mr-pian/goodnightuestc-web:1.0.5`，需要对应 Release 工作流成功，且 GHCR 包允许公开拉取。以下域名、端口和网络名称均为示例，不是作者提供的公共服务。项目只交付应用，不自动配置 Nginx、域名或证书。
+本文以 **v1.1.0 / Linux amd64** 为例。镜像为 `ghcr.io/mr-pian/goodnightuestc-web:1.1.0`，需要对应 Release 工作流成功，且 GHCR 包允许公开拉取。以下域名、端口和网络名称均为示例，不是作者提供的公共服务。项目只交付应用，不自动配置 Nginx、域名或证书。
 
 ## 1. 准备主机与工具
 
@@ -50,7 +50,7 @@ python3 --version
 全新安装示例。已有实例请先看第 7 节，保留原项目名、origin、内部密钥及数据卷，不能把以下新建目录步骤直接用于覆盖现有部署。
 
 ```sh
-RELEASE_VERSION=1.0.5
+RELEASE_VERSION=1.1.0
 install -m 0750 -d /opt/goodnightuestc
 cd /opt/goodnightuestc
 RELEASE_BASE="https://github.com/Mr-Pian/GoodnightUESTC-Web/releases/download/v${RELEASE_VERSION}"
@@ -70,7 +70,7 @@ python3 deploy/preflight.py --image-only
 先在 [天地图](https://lbs.tianditu.gov.cn/)申请自己的地图服务 Key，为实际访问站点配置来源白名单。Key 与完整 HTTPS 地址只在自己的终端输入，Key 不回显。
 
 ```sh
-python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.1.0
 ```
 
 安装器先检查工具，然后询问 `PUBLIC_ORIGIN`（例如 `https://checkin.example.com:60000`）和 Key，原子写入权限 `0600` 的 `.env`，执行配置校验、拉取镜像和 `up --no-build --wait`。它不打印 Key 和内部密钥，不向镜像仓库上传 `.env`。没有 buildx 的服务器也能采用此方式。
@@ -78,7 +78,7 @@ python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
 已有容器代理网络时，改用这一条；网络应已由运维建立并接入自己的代理：
 
 ```sh
-python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5 --proxy-network my-proxy-network
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.1.0 --proxy-network my-proxy-network
 ```
 
 后续所有 Compose 命令须一致使用 `docker compose -f compose.yaml -f deploy/compose.proxy-network.yaml …`，重复安装也继续带该网络参数。共享网络模式取消宿主机端口映射，代理访问 `http://backend:8090`；默认模式为宿主机代理访问 `http://127.0.0.1:18090`。
@@ -86,7 +86,7 @@ python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5 --pro
 仅配置、稍后再启动：
 
 ```sh
-python3 deploy/install.py --configure-only --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+python3 deploy/install.py --configure-only --image ghcr.io/mr-pian/goodnightuestc-web:1.1.0
 docker compose config --quiet
 docker compose pull backend
 docker compose up -d --no-build --wait backend
@@ -159,7 +159,7 @@ python3 deploy/preflight.py
 python3 deploy/install.py --configure-only
 ```
 
-在本机编辑 `.env`，将 `BACKEND_IMAGE` 设为自己的唯一标签（如 `goodnightuestc-web:1.0.5-local`），然后：
+在本机编辑 `.env`，将 `BACKEND_IMAGE` 设为自己的唯一标签（如 `goodnightuestc-web:1.1.0-local`），然后：
 
 ```sh
 COMPOSE_BAKE=false docker compose --progress plain build backend

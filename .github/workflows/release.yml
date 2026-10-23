@@ -5,9 +5,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag matching VERSION (for example v1.0.5)'
-        required: true
-        default: v1.0.5
+        description: 'Optional vX.Y.Z tag; leave blank to use the selected commit’s VERSION'
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -22,17 +21,37 @@ jobs:
       image: ${{ steps.version.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-      - id: version
+      - name: Validate version and release notes before building
+        id: version
         env:
-          REQUESTED_TAG: ${{ github.event.inputs.version || github.ref_name }}
+          REQUESTED_TAG: ${{ github.event.inputs.version }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
           python - <<'PY'
           import os, re
           from pathlib import Path
+
+          def fail(message):
+              print('::error::' + message)
+              raise SystemExit(1)
+
           number = Path('VERSION').read_text().strip()
-          tag = os.environ['REQUESTED_TAG']
-          assert re.fullmatch(r'\d+\.\d+\.\d+', number), 'Invalid VERSION'
-          assert tag == 'v' + number, 'Tag must match VERSION'
+          if not re.fullmatch(r'\d+\.\d+\.\d+', number):
+              fail(f'Invalid VERSION: {number!r}; expected X.Y.Z.')
+          expected_tag = 'v' + number
+          if os.environ['RELEASE_EVENT'] == 'workflow_dispatch':
+              tag = os.environ.get('REQUESTED_TAG', '').strip() or expected_tag
+          else:
+              tag = os.environ['RELEASE_REF']
+          print(f'VERSION={number}; requested tag={tag}; expected tag={expected_tag}')
+          if tag != expected_tag:
+              fail(f'Tag {tag!r} does not match VERSION {number!r}; expected {expected_tag!r}. '
+                   'Commit and push the matching release files, then start a new workflow run. '
+                   'Re-running an old run still uses its original commit and inputs.')
+          notes = Path('docs') / f'RELEASE_{tag}.md'
+          if not notes.is_file() or not notes.read_text(encoding='utf-8').strip():
+              fail(f'Missing or empty release notes: {notes}. Commit them before publishing.')
           image = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower()
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'tag={tag}\nnumber={number}\nimage={image}\n')

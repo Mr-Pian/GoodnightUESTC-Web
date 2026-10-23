@@ -39,13 +39,13 @@ vendor/moonuestc/        复用的协议、坐标与传输模块
 
 准备可访问学校官方服务的 Linux 服务器、Docker Engine 和 Compose v2。**Docker 只启动应用**，包含网页、后端和登录所需 Chromium；公网域名、反向代理及 HTTPS 证书由部署者自行接入。安装、配置、更新、回滚和备份见 **[后端部署说明](deploy/README.md#后端安装与启动)**。
 
-发行版：**v1.0.5 / Linux amd64**。从 [GitHub Releases](https://github.com/Mr-Pian/GoodnightUESTC-Web/releases)获取匹配版本的源码部署包、`DEPLOYMENT.md` 与校验文件；完整命令见 **[一步步部署](deploy/QUICKSTART.md)**，服务器预算见 **[资源规划](deploy/RESOURCES.md)**，版本变化见 [CHANGELOG](CHANGELOG.md)。镜像由发行工作流验证通过后发布到 GHCR；请确认对应版本发布成功及包允许公开拉取。
+发行版：**v1.1.0 / Linux amd64**。从 [GitHub Releases](https://github.com/Mr-Pian/GoodnightUESTC-Web/releases)获取匹配版本的源码部署包、`DEPLOYMENT.md` 与校验文件；完整命令见 **[一步步部署](deploy/QUICKSTART.md)**，服务器预算见 **[资源规划](deploy/RESOURCES.md)**，版本变化见 [CHANGELOG](CHANGELOG.md)。镜像由发行工作流验证通过后发布到 GHCR；请确认对应版本发布成功及包允许公开拉取。
 
 拉取源码后，推荐在服务器交互终端运行：
 
 ```sh
 # 推荐：使用已发布镜像，不在服务器构建。
-python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.0.5
+python3 deploy/install.py --image ghcr.io/mr-pian/goodnightuestc-web:1.1.0
 # 自行构建源码：
 python3 deploy/install.py
 ```
