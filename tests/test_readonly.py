@@ -1,5 +1,5 @@
 import json
-from copy import deepcopy
+from copy import copy, deepcopy
 from email.message import Message
 import unittest
 import urllib.request
@@ -7,13 +7,54 @@ from unittest.mock import patch
 from browser_login import BrowserLogin
 from core import (ReadOnlyTransport, ReadOnlySchool, ToolError,
                   allowed_read, browser_allowed, normalize_location, offline_test, online_test,
-                  ORIGIN, now)
+                  ORIGIN, now, verify_session)
 from hosted import MemoryStore
 from web_support import SNAPSHOT, POINT, WebAppTestCase
 
 
 
 class GuardTests(unittest.TestCase):
+    def test_saved_session_reopens_school_app_without_password_or_submission(self):
+        from moonuestc.transport import Response
+        calls = []
+        snapshot = deepcopy(SNAPSHOT)
+
+        def respond(transport, method, url, *, stage, **kwargs):
+            self.assertTrue(allowed_read(method, url))
+            self.assertIsNone(kwargs.get('payload'))
+            self.assertIsNone(kwargs.get('form'))
+            calls.append(stage)
+            if stage == 'today' and calls.count('today') == 1:
+                body = {'code': 5000, 'msg': '学校应用授权已过期'}
+            elif stage == 'portal_warmup':
+                body = {'code': 0}
+            elif stage == 'micro_app_entry':
+                # The re-entry can rotate cookies; preserve them for the new package.
+                cookie = copy(next(iter(transport.jar)))
+                cookie.value = 'synthetic-restored-cookie'
+                transport.jar.set_cookie(cookie)
+                return Response(200, {}, b'', ORIGIN+'/daily-checkin-h5/index.html?appId=294')
+            else:
+                body = {'code': 0, 'data': {'recordStatusCode': 'PENDING'}}
+            return Response(200, {}, json.dumps(body).encode(), url)
+
+        with patch('core.Transport.request', new=respond):
+            verify_session(snapshot)
+        self.assertEqual(calls, ['today', 'portal_warmup', 'micro_app_entry', 'today'])
+        self.assertEqual(snapshot['cookies'][0]['value'], 'synthetic-restored-cookie')
+
+    def test_valid_saved_session_needs_no_app_entry_and_timeout_does_not_relogin(self):
+        from moonuestc.transport import Response
+        with patch('core.Transport.request', return_value=Response(
+                200, {}, b'{"code":0,"data":{"recordStatusCode":"PENDING"}}', ORIGIN)) as network:
+            verify_session(deepcopy(SNAPSHOT))
+            network.assert_called_once()
+        with patch('core.Transport.request', side_effect=ToolError('timeout')) as network:
+            with self.assertRaises(ToolError) as error:
+                verify_session(deepcopy(SNAPSHOT))
+            self.assertEqual(error.exception.reason, 'timeout')
+            network.assert_called_once()
+
     def test_set_cookie_rotation_and_deletion_survive_request_failure_without_cross_user_state(self):
         snapshot = deepcopy(SNAPSHOT)
         snapshot['cookies'].append({**snapshot['cookies'][0], 'name': 'obsolete', 'value': 'remove-me'})

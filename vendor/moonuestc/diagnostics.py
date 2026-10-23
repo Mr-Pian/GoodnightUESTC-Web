@@ -32,6 +32,10 @@ def school_message(value,account=None):
         secret=(account or {}).get(key)
         if isinstance(secret,str) and secret:
             secrets.extend([secret,html.escape(secret),urllib.parse.quote(secret,safe=''),urllib.parse.quote_plus(secret),json.dumps(secret,ensure_ascii=True)[1:-1],base64.b64encode(secret.encode()).decode()])
+    for cookie in (account or {}).get('cookies', []):
+        secret=cookie.get('value') if isinstance(cookie,dict) else None
+        if isinstance(secret,str) and secret:
+            secrets.extend([secret,html.escape(secret),urllib.parse.quote(secret,safe=''),urllib.parse.quote_plus(secret),json.dumps(secret,ensure_ascii=True)[1:-1],base64.b64encode(secret.encode()).decode()])
     for secret in sorted(set(secrets),key=len,reverse=True):
         value=value.replace(secret,MASK)
         if re.fullmatch(r'[a-fA-F0-9]{24,}',secret):value=re.sub(re.escape(secret),MASK,value,flags=re.I)

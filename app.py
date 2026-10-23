@@ -210,7 +210,8 @@ def create_app(data_dir=None, *, hosted):
                 return jsonify(error='当前已有登录或正在登录，请先清除后再恢复。'), 409
             data = request.get_json()
             snapshot, grant = packages.restore(data.get('token') if isinstance(data, dict) else None, g.device)
-            # One bounded read-only check; no browser, credential POST or submission.
+            # Read-only validation, including school-app re-entry if necessary;
+            # no browser, credential POST or submission.
             school_call(verify_session, snapshot)
             if not packages.current(grant, g.device):
                 raise PackageError('saved_session_unavailable')

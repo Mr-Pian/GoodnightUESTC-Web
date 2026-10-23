@@ -1,4 +1,4 @@
-"""Explicit one-shot attendance, with durable per-account/day claims and readback."""
+"""Explicit attendance, with durable per-account/day claims and readback."""
 import hashlib
 from contextlib import contextmanager
 import sqlite3
@@ -6,6 +6,7 @@ import time
 from core import (ReadOnlyTransport, ReadOnlySchool, Transport, School, ToolError,
                   ORIGIN, normalize_location, now, valid_today, window, check_fence, read_today)
 from moonuestc.policy import build_payload, verified, TERMINAL
+from moonuestc.diagnostics import error_details
 
 SUBMIT_URL = ORIGIN + '/daily-checkin/api/student-checkin-record/checkin'
 
@@ -29,7 +30,12 @@ class Attempts:
     def claim(self, account, day):
         with self.db() as db:
             db.execute('PRAGMA synchronous=FULL')
-            cursor = db.execute('INSERT OR IGNORE INTO attempts VALUES (?,?,?,?)',
+            # Only a completed, explicit rejection may be replaced. An in-flight,
+            # successful or ambiguous POST remains protected across restarts.
+            cursor = db.execute('INSERT INTO attempts VALUES (?,?,?,?) '
+                                'ON CONFLICT(account,day) DO UPDATE SET '
+                                'outcome=excluded.outcome, created=excluded.created '
+                                "WHERE attempts.outcome='rejected'",
                                 (account, day, 'started', time.time()))
             return cursor.rowcount == 1
 
@@ -37,9 +43,10 @@ class Attempts:
         with self.db() as db:
             db.execute('UPDATE attempts SET outcome=? WHERE account=? AND day=?', (outcome, account, day))
 
-    def exists(self, account, day):
+    def outcome(self, account, day):
         with self.db() as db:
-            return db.execute('SELECT 1 FROM attempts WHERE account=? AND day=?', (account, day)).fetchone() is not None
+            row = db.execute('SELECT outcome FROM attempts WHERE account=? AND day=?', (account, day)).fetchone()
+            return row[0] if row else None
 
 
 class SubmissionTransport(ReadOnlyTransport):
@@ -108,9 +115,11 @@ def submit_checkin(snapshot, location, attempts, *, sleep=time.sleep, address=No
     if status in TERMINAL:
         return {'mode': 'checkin', 'result': 'already_recorded', 'recordStatus': status,
                 'businessDate': day, 'submitted': False, 'confirmed': verified(record, now())}
-    if attempts.exists(key, day):
+    previous = attempts.outcome(key, day)
+    if previous is not None and previous != 'rejected':
         return {'mode': 'checkin', 'result': 'prior_attempt', 'recordStatus': status,
-                'businessDate': day, 'submitted': False, 'confirmed': False}
+                'businessDate': day, 'submitted': False, 'confirmed': False,
+                'previousOutcome': previous, 'retryAllowed': False}
     payload = configured_payload(snapshot, location)
     progress('正在复核学校允许的位置范围…')
     check_fence(payload, school.locations())
@@ -134,18 +143,17 @@ def submit_checkin(snapshot, location, attempts, *, sleep=time.sleep, address=No
     payload['reverseGeocode'] = address
     if not attempts.claim(key, day):
         return {'mode': 'checkin', 'result': 'prior_attempt', 'recordStatus': fresh['recordStatusCode'],
-                'businessDate': day, 'submitted': False, 'confirmed': False}
+                'businessDate': day, 'submitted': False, 'confirmed': False, 'retryAllowed': False}
     result = {'mode': 'checkin', 'result': 'unknown', 'businessDate': day,
-              'submitted': True, 'confirmed': False, 'recordStatus': 'PENDING'}
+              'submitted': True, 'confirmed': False, 'recordStatus': 'PENDING', 'retryAllowed': False}
     try:
         progress('正在向学校提交签到，请勿重复点击…')
         school.transport.permit = True
         school.submit(payload)
         result['response'] = 'accepted'
     except ToolError as error:
-        result.update(response='rejected' if error.reason == 'business_error' else 'unknown', reason=error.reason)
-        if error.api_code is not None:
-            result['apiCode'] = error.api_code
+        result.update(response='rejected' if error.reason == 'business_error' else 'unknown',
+                      **error_details(error, snapshot))
     except Exception:
         result.update(response='unknown', reason='submission_response_unknown')
     finally:
@@ -171,9 +179,13 @@ def submit_checkin(snapshot, location, attempts, *, sleep=time.sleep, address=No
             continue
     if result['result'] == 'unknown' and result.get('response') == 'rejected':
         result['result'] = 'rejected'
+        # A later explicit confirmation still performs fresh school record,
+        # fence and schedule checks before claiming another one-shot POST.
+        result['retryAllowed'] = True
     try:
         attempts.finish(key, day, result['result'])
     except sqlite3.Error:
         # Claim was already committed before POST; preserve the result, never resend.
-        pass
+        result['retryAllowed'] = False
+        result['attemptStateSaved'] = False
     return result

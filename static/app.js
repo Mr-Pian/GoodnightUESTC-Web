@@ -5,7 +5,7 @@ let refreshInFlight = false;
 const liveProgress=document.createElement('p');liveProgress.id='checkin-progress';liveProgress.className='live-progress';liveProgress.hidden=true;liveProgress.setAttribute('role','status');$('checkin-error').before(liveProgress);
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toast.timer); toast.timer=setTimeout(()=>$('toast').hidden=true,5000); }
 async function api(path, data) {
-  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path==='/api/session/restore'?15000:path==='/api/checkin'?120000:path.includes('/test/online')||path.includes('/checkin/prepare')?60000:8000);
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path==='/api/checkin'?120000:path==='/api/session/restore'||path.includes('/test/online')||path.includes('/checkin/prepare')?60000:8000);
   try{const response=await fetch(path,{signal:controller.signal,method:data===undefined?'GET':'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},...(data===undefined?{}:{body:JSON.stringify(data)})});
     const result=await response.json(); if(!response.ok){const error=new Error(result.error||'操作失败');error.reason=result.reason;error.status=response.status;if(['session_rejected','portal_session_rejected','micro_app_unauthorized'].includes(error.reason))document.dispatchEvent(new CustomEvent('school-session-invalid'));throw error;}return result;
   }catch(e){if(e.name==='AbortError')throw new Error(path==='/api/checkin'?'响应超时，签到结果尚不明确，请先核对学校记录，勿重复提交。':'连接等待超时，请检查网络后重试。');throw e;}finally{clearTimeout(timeout);}
@@ -64,6 +64,18 @@ function renderResult(result){
   for(const [label,value] of values){const box=document.createElement('div');box.className='metric';const span=document.createElement('span'),strong=document.createElement('strong');span.textContent=label;strong.textContent=value;box.append(span,strong);$('result-summary').append(box);}
 }
 async function runTest(mode){testing=true;scheduleRefresh();const button=$(mode);const label=button.innerHTML;button.disabled=true;button.textContent=mode==='online'?'正在读取学校记录…':'正在运行离线自检…';try{if(mode==='online'&&dirtyLocation())throw new Error('请先选择并保存实际位置。');const r=await api('/api/test/'+mode,{});renderResult(r.result);}catch(e){toast(e.message);$('result').hidden=false;$('result').classList.add('error');$('result-title').textContent=e.message;$('result-summary').replaceChildren();$('result-json').textContent='未提交任何打卡或报告记录。';$('result-time').textContent='';}finally{testing=false;button.disabled=false;button.innerHTML=label;refresh().catch(()=>{});}}
+function renderCheckinResult(result){
+  const canRetry=result.result==='rejected'&&result.retryAllowed===true;
+  const labels={confirmed:'签到已确认',already_recorded:'学校已有当天记录',prior_attempt:'已有提交待核对',unknown:'提交结果待核对',rejected:canRetry?'学校拒绝提交，可重新检查':'学校拒绝提交，重试状态待核对',record_changed:'当天记录发生变化'};
+  $('checkin-state').textContent=labels[result.result]||'请核对学校记录';
+  const details=[];
+  if(result.apiCode!==undefined)details.push('业务码 '+result.apiCode);
+  if(result.httpStatus!==undefined)details.push('HTTP '+result.httpStatus);
+  if(result.schoolMessage)details.push(result.schoolMessage);
+  const suffix=details.length?'（'+details.join('；')+'）':'';
+  $('checkin-message').textContent=result.confirmed?'已回读学校当天记录，确认签到成功。':result.result==='already_recorded'?'没有再次提交，学校当天已经有签到、报告或豁免记录。':result.result==='prior_attempt'?'此前请求仍在执行、结果不明或已完成，本次没有再次提交。请运行在线只读检查并核对学校记录；PENDING 本身不能排除请求仍在处理中。':result.result==='rejected'?(canRetry?`学校明确拒绝本次请求${suffix}。可修正问题后点击“预检查并确认签到”，重新核对并确认后手动提交。`:`学校明确拒绝本次请求${suffix}，但本地尝试结果未能保存，暂不能再次提交。请联系部署者检查存储并保留数据卷。`):`本次请求结果尚未确认${suffix}，不会自动重发。请运行在线只读检查并核对学校记录。`;
+  return labels[result.result]||'请核对学校记录';
+}
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开登录页面…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent='打开学校登录页面 ↗';}finally{$('password').value='';}});
 $('show-password').addEventListener('click',()=>{const hide=$('password').type==='password';$('password').type=hide?'text':'password';$('show-password').textContent=hide?'隐藏':'显示';});
 $('cancel-login').addEventListener('click',async()=>{try{await api('/api/login/cancel',{});toast('已请求取消，窗口稍后关闭。');}catch(e){toast(e.message);}});
@@ -88,10 +100,8 @@ $('submit-checkin').addEventListener('click',async()=>{
   $('submit-checkin').textContent='正在复核并提交…';liveProgress.hidden=false;liveProgress.textContent='正在做提交前检查，请勿重复点击。';
   const ticket=confirmation;confirmation='';
   try{const r=await api('/api/checkin',{confirmation:ticket,confirm:true,actual_location_confirmed:true});const result=r.result;
-    const labels={confirmed:'签到已确认',already_recorded:'学校已有当天记录',prior_attempt:'当天已有提交尝试，仅复查',unknown:'提交结果待核对',rejected:'学校拒绝提交',record_changed:'当天记录发生变化'};
-    $('checkin-state').textContent=labels[result.result]||'请核对学校记录';
-    $('checkin-message').textContent=result.confirmed?'已回读学校当天记录，确认签到成功。':result.result==='already_recorded'?'没有再次提交，学校当天已经有签到、报告或豁免记录。':result.result==='prior_attempt'?'没有重复提交，请运行在线只读检查核对学校记录。':result.result==='rejected'?`学校未接受本次请求${result.apiCode!==undefined?'（业务码 '+result.apiCode+'）':''}，请核对学校记录。`:'本工具不会自动重发，请运行在线只读检查并核对学校记录。';
-    $('checkin-dialog').close();toast(labels[result.result]||'请核对学校记录');
+    const label=renderCheckinResult(result);
+    $('checkin-dialog').close();toast(label);
   }catch(e){$('checkin-error').textContent=e.message+' 请关闭弹窗后重新检查；不要连续重试。';$('checkin-error').hidden=false;}
   finally{submitting=false;$('close-confirmation').disabled=false;$('confirm-location').disabled=false;refresh().catch(()=>{});}
 });

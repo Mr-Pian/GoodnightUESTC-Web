@@ -43,7 +43,8 @@
         document.getElementById('remember-session-duration').textContent =
           `最多 ${Math.round(state.persistence.max_age / 3600 * 10) / 10} 小时，学校失效时仍需重登`;
         if (!result.available) say('本地存储不可用；本次登录可继续使用，无法保证下次恢复。');
-        else say(enabled ? '登录后将加密保存到此浏览器；共用设备请关闭。' : '未在此浏览器记住登录。');
+        else say(enabled ? (record && record.token ? '已找到本机保存，准备恢复学校登录…' :
+          '此浏览器未找到可恢复的学校登录；登录后将加密保存，共用设备请关闭。') : '未在此浏览器记住登录。');
       }
       const active = ['opening', 'waiting', 'verifying'].includes(state.login.state);
       if (!enabled || active) return;

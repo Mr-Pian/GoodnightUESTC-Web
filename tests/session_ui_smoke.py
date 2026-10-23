@@ -67,9 +67,14 @@ def main():
         contexts = BrowserContexts(browser)
         proxies = {}
         try:
-            def context_for(owner, script='', mobile=False):
-                context = contexts.new(viewport={'width': 390, 'height': 844} if mobile else
-                                               {'width': 1440, 'height': 1200})
+            def context_for(owner, script='', mobile=False, profile=None):
+                viewport = {'width': 390, 'height': 844} if mobile else {'width': 1440, 'height': 1200}
+                if profile:
+                    context = p.chromium.launch_persistent_context(
+                        profile, headless=True, viewport=viewport, **browser_options())
+                    contexts.contexts.append(context)
+                else:
+                    context = contexts.new(viewport=viewport)
                 if script:
                     context.add_init_script(script)
 
@@ -247,11 +252,32 @@ def main():
                 expect(page.locator(MESSAGE)).to_contain_text('无法保存登录')
                 contexts.close(context)
 
+                # A real browser process restart preserves IndexedDB and only the
+                # persistent device cookie; a fresh workspace restores the package.
+                profile = str(Path(directory) / 'synthetic-browser-profile')
+                context = context_for('cold-browser', profile=profile)
+                page = open_page(context)
+                seed(page, 'cold-browser')
+                saved = stored(page)
+                device = backend.devices['cold-browser']
+                context.clear_cookies(name='__Host-uestc')
+                backend.expire('cold-browser')
+                contexts.close(context)
+                context = context_for('cold-browser', profile=profile)
+                assert next(cookie['value'] for cookie in context.cookies(BASE)
+                            if cookie['name'] == DEVICE_COOKIE) == device
+                page = open_page(context)
+                expect(page.locator(MESSAGE)).to_contain_text('学校登录已恢复')
+                expect(page.locator('#account-label')).to_contain_text(SNAPSHOT['student_id'])
+                assert record(page)['expires_at'] == saved['expires_at']
+                contexts.close(context)
+
                 assert not errors, errors
                 print('Session UI PASS: IndexedDB, workspace expiry, backend restart, unchanged expiry, '
                       'transient retry, multi-tab revoke/clear, hidden polling, delayed CSP predicate, '
                       'route cleanup, localStorage fallback '
-                      '(disabled/blocked/failed IndexedDB), unavailable storage, mobile; real school requests=0')
+                      '(disabled/blocked/failed IndexedDB), unavailable storage, browser process restart, '
+                      'mobile; real school requests=0')
         finally:
             try:
                 contexts.close_all()

@@ -1,5 +1,7 @@
 """Manual submission tests use synthetic school responses only."""
 import tempfile
+import hashlib
+import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -63,6 +65,100 @@ class SubmissionTests(unittest.TestCase):
         self.assertFalse(second['submitted'])
         self.school.submit.assert_called_once()
 
+    def test_explicit_rejection_can_be_retried_after_restart_and_fresh_checks(self):
+        self.school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001,
+                                                  http_status=200, school_message='请求被拒绝')
+        first = submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.assertEqual(first['result'], 'rejected')
+        self.assertTrue(first['retryAllowed'])
+        self.assertEqual(first['apiCode'], 4001)
+        self.assertEqual(first['httpStatus'], 200)
+        self.assertEqual(first['schoolMessage'], '请求被拒绝')
+        self.school.submit.assert_called_once()  # No automatic POST retry.
+
+        self.school.reset_mock()
+        self.school.submit.side_effect = None
+        self.school.today.side_effect = [record(), record(), record('CHECKED_IN')]
+        second = submit_checkin(SNAPSHOT, POINT, Attempts(Path(self.temp.name)), sleep=lambda _: None)
+        self.assertEqual(second['result'], 'confirmed')
+        self.school.submit.assert_called_once()
+        self.school.locations.assert_called_once()
+        self.school.schedule.assert_called_once()
+        self.assertEqual(self.school.today.call_count, 3)
+
+    def test_old_rejected_row_does_not_bypass_school_record_or_window(self):
+        key = hashlib.sha256(SNAPSHOT['student_id'].encode()).hexdigest()
+        self.attempts.claim(key, DAY)
+        self.attempts.finish(key, DAY, 'rejected')
+        self.school.schedule.return_value = {**SCHEDULE, 'studentCheckinStartOffsetMinute': 0,
+                                            'studentCheckinEndOffsetMinute': 30}
+        with self.assertRaises(ToolError) as error:
+            submit_checkin(SNAPSHOT, POINT, self.attempts)
+        self.assertEqual(error.exception.reason, 'outside_checkin_window')
+        self.assertEqual(self.attempts.outcome(key, DAY), 'rejected')
+        self.school.today.return_value = record('CHECKED_IN')
+        result = submit_checkin(SNAPSHOT, POINT, self.attempts)
+        self.assertEqual(result['result'], 'already_recorded')
+        self.school.submit.assert_not_called()
+
+    def test_rejection_then_ambiguous_retry_remains_protected(self):
+        self.school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001)
+        submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.school.submit.side_effect = ToolError('timeout', 'checkin_post')
+        retry = submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.assertEqual(retry['result'], 'unknown')
+        self.assertFalse(retry['retryAllowed'])
+        blocked = submit_checkin(SNAPSHOT, POINT, Attempts(Path(self.temp.name)))
+        self.assertEqual(blocked['result'], 'prior_attempt')
+        self.assertEqual(self.school.submit.call_count, 2)
+
+    def test_rejection_not_saved_does_not_offer_retry(self):
+        self.school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001)
+        with patch.object(self.attempts, 'finish', side_effect=sqlite3.OperationalError('synthetic failure')):
+            result = submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.assertEqual(result['result'], 'rejected')
+        self.assertFalse(result['retryAllowed'])
+        self.assertFalse(result['attemptStateSaved'])
+        blocked = submit_checkin(SNAPSHOT, POINT, self.attempts)
+        self.assertEqual(blocked['result'], 'prior_attempt')
+        self.school.submit.assert_called_once()
+
+    def test_rejected_response_with_confirmed_readback_stays_protected(self):
+        self.school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001)
+        self.school.today.side_effect = [record(), record(), record('CHECKED_IN')]
+        result = submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.assertTrue(result['confirmed'])
+        self.assertFalse(result['retryAllowed'])
+        self.school.today.side_effect = None
+        self.school.today.return_value = record()
+        second = submit_checkin(SNAPSHOT, POINT, self.attempts)
+        self.assertEqual(second['result'], 'prior_attempt')
+        self.school.submit.assert_called_once()
+
+    def test_http_and_malformed_response_are_not_explicit_rejections(self):
+        for reason in ('http_error', 'invalid_json', 'network_error', 'session_rejected'):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                attempts = Attempts(Path(directory))
+                self.school.submit.side_effect = ToolError(reason, 'checkin_post')
+                self.school.submit.reset_mock()
+                first = submit_checkin(SNAPSHOT, POINT, attempts, sleep=lambda _: None)
+                self.assertEqual(first['result'], 'unknown')
+                self.assertFalse(first['retryAllowed'])
+                second = submit_checkin(SNAPSHOT, POINT, attempts)
+                self.assertEqual(second['result'], 'prior_attempt')
+                self.school.submit.assert_called_once()
+
+    def test_school_message_redacts_snapshot_credentials(self):
+        self.school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001,
+            school_message=SNAPSHOT['student_id']+' '+SNAPSHOT['cookies'][0]['value']+
+                           ' token=private-token <b>请稍后重试</b>')
+        result = submit_checkin(SNAPSHOT, POINT, self.attempts, sleep=lambda _: None)
+        self.assertNotIn(SNAPSHOT['student_id'], result['schoolMessage'])
+        self.assertNotIn(SNAPSHOT['cookies'][0]['value'], result['schoolMessage'])
+        self.assertNotIn('private-token', result['schoolMessage'])
+        self.assertNotIn('<b>', result['schoolMessage'])
+        self.assertIn('请稍后重试', result['schoolMessage'])
+
     def test_confirmation_address_reused_without_duplicate_schedule_query(self):
         self.school.today.side_effect = [record(), record(), record('CHECKED_IN')]
         result = submit_checkin(SNAPSHOT, POINT, self.attempts, address='已确认地址', sleep=lambda _: None)
@@ -95,6 +191,20 @@ class SubmissionTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             claimed = list(pool.map(lambda _: self.attempts.claim('synthetic-hash', DAY), range(4)))
         self.assertEqual(sum(claimed), 1)
+
+    def test_rejected_claim_can_only_be_reclaimed_by_one_concurrent_request(self):
+        self.attempts.claim('synthetic-hash', DAY)
+        self.attempts.finish('synthetic-hash', DAY, 'rejected')
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            claimed = list(pool.map(lambda _: self.attempts.claim('synthetic-hash', DAY), range(4)))
+        self.assertEqual(sum(claimed), 1)
+        self.assertEqual(self.attempts.outcome('synthetic-hash', DAY), 'started')
+
+    def test_started_or_unrecognized_outcome_is_never_reclaimed(self):
+        for outcome in ('started', 'unknown', 'confirmed', 'record_changed', 'future-outcome'):
+            self.attempts.claim(outcome, DAY)
+            self.attempts.finish(outcome, DAY, outcome)
+            self.assertFalse(self.attempts.claim(outcome, DAY))
 
 
 class TransportTests(unittest.TestCase):
@@ -158,3 +268,23 @@ class ConfirmationTests(WebAppTestCase):
             response = self.post('/api/checkin', {'confirmation': token, 'confirm': True, 'actual_location_confirmed': True})
             self.assertEqual(response.status_code, 400)
             submit.assert_not_called()
+
+    def test_rejection_requires_a_new_confirmation_before_manual_retry(self):
+        school = MagicMock()
+        school.today.return_value = record()
+        school.locations.return_value = [{**normalize_location(POINT)['gcj02'], 'radiusMeter': 150}]
+        school.schedule.return_value = SCHEDULE
+        school.reverse_geocode.return_value = '合成测试地址'
+        school.submit.side_effect = ToolError('business_error', 'checkin_post', 4001)
+        data = {'confirmation': self.ticket(), 'confirm': True, 'actual_location_confirmed': True}
+        with patch('checkin.school_for', return_value=school), patch('checkin.now', return_value=INSTANT):
+            first = self.post('/api/checkin', data)
+            self.assertEqual(first.json['result']['result'], 'rejected')
+            self.assertEqual(self.post('/api/checkin', data).status_code, 400)
+            school.submit.assert_called_once()
+            data['confirmation'] = self.ticket()
+            school.submit.side_effect = None
+            school.today.side_effect = [record(), record(), record('CHECKED_IN')]
+            second = self.post('/api/checkin', data)
+            self.assertEqual(second.json['result']['result'], 'confirmed')
+            self.assertEqual(school.submit.call_count, 2)

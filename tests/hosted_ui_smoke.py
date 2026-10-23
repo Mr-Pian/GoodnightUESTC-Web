@@ -176,22 +176,35 @@ def main():
                            'latitude': POINT['latitude'], 'longitude': POINT['longitude'],
                            'window': {'start': '21:00', 'end': '23:30'}}
                 with patch('app.prepare_checkin', return_value=preview), patch(
-                        'app.submit_checkin', return_value={'confirmed': True, 'submitted': True,
-                                                         'result': 'confirmed'}) as submit:
+                        'app.submit_checkin', side_effect=[
+                            {'confirmed': False, 'submitted': True, 'result': 'rejected',
+                             'retryAllowed': True, 'apiCode': 4001, 'httpStatus': 200,
+                             'schoolMessage': '合成测试：请重新检查'},
+                            {'confirmed': True, 'submitted': True, 'result': 'confirmed'}]) as submit:
+                    page.locator('#prepare-checkin').click()
+                    expect(page.locator('#checkin-dialog')).to_be_visible()
+                    expect(page.locator('#submit-checkin')).to_be_disabled()
+                    page.locator('#confirm-location').check()
+                    page.locator('#submit-checkin').click()
+                    expect(page.locator('#checkin-state')).to_have_text('学校拒绝提交，可重新检查')
+                    expect(page.locator('#checkin-message')).to_contain_text('业务码 4001')
+                    expect(page.locator('#checkin-message')).to_contain_text('合成测试：请重新检查')
+                    expect(page.locator('#checkin-dialog')).not_to_be_visible()
+                    submit.assert_called_once()
                     page.locator('#prepare-checkin').click()
                     expect(page.locator('#checkin-dialog')).to_be_visible()
                     expect(page.locator('#submit-checkin')).to_be_disabled()
                     page.locator('#confirm-location').check()
                     page.locator('#submit-checkin').click()
                     expect(page.locator('#checkin-state')).to_have_text('签到已确认')
-                    submit.assert_called_once()
+                    assert submit.call_count == 2
                 page.screenshot(path='/tmp/goodnight-hosted-desktop.png', full_page=True)
                 other.screenshot(path='/tmp/goodnight-hosted-mobile.png', full_page=True)
                 assert other.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert not errors, errors
                 print('Hosted UI PASS: isolated users, remote input, password clearing, Tianditu vector/labels, '
                       'tile failure/retry, basemap switch without coordinate changes, GCJ-02 display, campus/map selection, '
-                      'offline test, synthetic confirmed submission, mobile; real school requests=0')
+                      'offline test, explicit rejection and manually confirmed retry, mobile; real school requests=0')
         finally:
             try:
                 contexts.close_all()

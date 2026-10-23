@@ -126,9 +126,9 @@ def read_today(school):
 
 
 def verify_session(snapshot):
-    """Login only needs an authorized record read, not schedule/fence checks."""
+    """Validate saved login, reopening the school app with read-only GETs if needed."""
     school = ReadOnlySchool(ReadOnlyTransport(snapshot, timeout=6), {}, lambda: None, emit=lambda *a, **k: None)
-    data = school.today()
+    data = read_today(school)
     if not isinstance(data, dict):
         raise ToolError('invalid_record', 'today')
 
