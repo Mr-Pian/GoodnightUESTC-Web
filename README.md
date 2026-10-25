@@ -1,4 +1,10 @@
 # 晚安成电 选点签到-Web端
+## **说明**
+由于当前最新release无法应对客户端新增的取票流程 且目前有不少优秀仓库 比如[funsakuradango/GoodNightUESTC-NapCatBot](https://github.com/funsakuradango/GoodNightUESTC-NapCatBot.git) 以及本仓库的上游[`LCX-luo/GoodnightUESTC`](https://github.com/LCX-luo/GoodnightUESTC) 对该项目方有着更优雅和完善的处理方式(我未推送的版本采用独立脚本本地抓包, 无法实现完全自动化和完全的前后端分离) 故于2026/10/25 **永久锁定且停止维护**
+
+**注意该仓库的Release由于未处理取票流程无法使用!!!**
+
+源码供参考
 
 ## **免责声明**
 
